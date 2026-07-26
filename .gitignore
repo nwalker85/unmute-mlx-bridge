@@ -1,0 +1,48 @@
+.DS_Store
+*.log
+tmp/
+.tmp/
+dist/
+build/
+node_modules/
+target/
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+
+# OpenCode and codegraph session state — never enter candidate history
+.omo/
+.codegraph
+
+# Nix
+result
+result-*
+
+# git worktrees
+.worktrees/
+
+# Hugging Face model cache — never commit weights
+# ~/.cache/huggingface is outside the repo; this guards accidental symlinks
+hf_cache/
+models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

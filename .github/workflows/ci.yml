@@ -1,0 +1,40 @@
+---
+name: ci
+
+# GitHub is canonical for this publication candidate. GitHub Actions uses
+# github-hosted ubuntu-latest with no alternate CI enrollment. Registry and
+# artifact publication are deferred until explicit approval.
+
+on:  # yamllint disable-line rule:truthy
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up uv
+        # astral-sh/setup-uv v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.12"
+
+      - name: Whitespace check
+        run: git diff --check
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run portable tests
+        run: uv run --locked pytest -q
+        # Hardware tests (pytest -m hardware) are NOT run here.
+        # They require Apple Silicon and real model weights.
+        # Run them explicitly on the reference host only.

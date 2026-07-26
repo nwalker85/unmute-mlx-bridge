@@ -1,0 +1,19 @@
+{
+  "schema_version": "package-surface.v0.1",
+  "lane": "python-uv",
+  "language": "python",
+  "package_manager": "uv",
+  "package_name": "unmute-mlx-bridge",
+  "registry_target": "none",
+  "publish_command": "none — deferred until explicit publication approval",
+  "release_trigger": "manually approved release only",
+  "ci_gate": "uv sync --locked && uv run --locked pytest -q",
+  "ci_lane": "github-actions",
+  "runner_label": "github-hosted:ubuntu-latest",
+  "nix_shell": "devShells.default",
+  "nix_flake": "flake-check-required-before-publish",
+  "semver_policy": "semver-v2",
+  "owner": "Nate Walker",
+  "publication_status": "private_incubation",
+  "_note": "GitHub is canonical. GitHub Actions uses github-hosted ubuntu-latest with no alternate CI enrollment. Registry and artifact publication are deferred until explicit approval."
+}
