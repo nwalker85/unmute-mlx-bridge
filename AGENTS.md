@@ -16,9 +16,30 @@ remotes, deploy surfaces, or safety boundaries change.
   community release under Apache-2.0.
 - The repo remains **private** throughout incubation. Visibility change requires
   explicit publication approval from Nate (see `docs/repo-intake.md`).
-- **GitHub Actions is the only CI surface**, using GitHub-hosted
+- **GitHub Actions is the intended remote CI surface**, using GitHub-hosted
   `ubuntu-latest`. There is no alternate CI enrollment.
 - Registry and artifact publication are deferred until explicit approval.
+
+### Verified Private-Incubation Enforcement State
+
+Verified on 2026-07-26:
+
+- `.github/workflows/ci.yml` passes local `actionlint` and `yamllint`
+  validation.
+- The repository Actions API reports Actions enabled with
+  `allowed_actions=all`, but workflow-triggered runs currently stop before job
+  allocation as nameless `BuildFailed` / `startup_failure` runs with zero jobs.
+  Those runs provide no remote test evidence.
+- Until private GitHub Actions job execution is restored, locked local
+  validation is the active private-incubation PR evidence gate:
+  `uv sync --locked`, `git diff --check`, and
+  `uv run --locked pytest -q`. Include `actionlint` and `yamllint` evidence
+  when workflow files change.
+- GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence. Do
+  not report it as a passing check or substitute it for test results.
+- Remote CI execution and branch protection/ruleset enforcement remain
+  pending external GitHub account capability. Current API attempts to inspect
+  or configure branch protection and rulesets return `403`.
 
 ## Privacy and Data Boundaries
 
@@ -69,7 +90,9 @@ uv run --locked pytest -q
 
 ## Deploy Model
 
-- CI: GitHub Actions (`.github/workflows/ci.yml`)
+- Intended remote CI: GitHub Actions (`.github/workflows/ci.yml`); locked local
+  validation is the active private-incubation PR evidence gate while runs fail
+  before job allocation
 - Artifact: none until publication approved
 - Runtime host: local Apple Silicon (canary only)
 - Migration command: not applicable

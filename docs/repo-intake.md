@@ -50,8 +50,23 @@ authority is not required for v0.1.
 ## Runner and CI
 
 - `runner_labels`: GitHub-hosted `ubuntu-latest` for portable CI.
-- GitHub is canonical, and GitHub Actions is the only CI surface. There is no
-  alternate CI enrollment.
+- GitHub is canonical. The intended `ci_lane` is `github-actions` on
+  `github-hosted:ubuntu-latest`; there is no alternate CI enrollment.
+- Verified 2026-07-26: `.github/workflows/ci.yml` passes local `actionlint` and
+  `yamllint`. The repository Actions API reports Actions enabled with
+  `allowed_actions=all`, but workflow-triggered runs stop before job allocation
+  as nameless `BuildFailed` / `startup_failure` runs with zero jobs. They
+  provide no remote test evidence.
+- Until private GitHub Actions job execution is restored, locked local
+  validation (`uv sync --locked`, `git diff --check`, and
+  `uv run --locked pytest -q`) is the active private-incubation PR evidence
+  gate. Workflow changes also require local `actionlint` and `yamllint`
+  evidence.
+- GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence, and
+  must not be reported as a passing check.
+- Remote CI execution and branch protection/ruleset enforcement remain pending
+  external GitHub account capability. Current branch protection and ruleset API
+  requests return `403`.
 - Registry and artifact publication are deferred until explicit approval.
 
 ## Observability
@@ -80,14 +95,17 @@ explicit decision. See the publication gate in `AGENTS.md`.
 | Intake record | ✓ present | This document |
 | AGENTS.md | ✓ present | GitHub canonical, privacy boundaries, guardrails |
 | package-surface.json | ✓ present | GitHub CI posture, private_incubation |
-| Scaffold lane | ✓ python-uv | GitHub Actions on ubuntu-latest |
+| Scaffold lane | ✓ python-uv | Intended GitHub Actions lane on ubuntu-latest |
 | SemVer policy | ✓ 0.y.z | semver-v2 from 0.1.0 |
 | Namespace decision | ✓ not applicable | Loopback model endpoints only |
 | SDK/API decision | ✓ recorded | MessagePack WS + HTTP ops |
 | Identity decision | ✓ not applicable | Optional static header only |
-| Runner decision | ✓ recorded | GitHub-hosted, no alternate CI enrollment |
+| Runner decision | ✓ recorded | Intended GitHub-hosted runner, no alternate CI enrollment |
 | Observability decision | ✓ recorded | Prometheus in package; dashboards downstream |
-| CI | ✓ .github/workflows/ci.yml | GitHub Actions |
+| CI workflow definition | ✓ locally validated | `.github/workflows/ci.yml` passes actionlint and yamllint |
+| Private-incubation PR evidence | ✓ active local gate | Locked sync, diff check, and portable tests |
+| Remote CI execution | pending external capability | Startup failure before job allocation; zero jobs |
+| Branch protection/rulesets | pending external capability | GitHub API returns 403 |
 | Publication gate | pending | Private incubation; explicit approval required |
 | ADR: production cutover | pending | Required before any downstream integration |
 | ADR: publication | pending | Required before visibility change |

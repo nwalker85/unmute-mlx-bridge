@@ -15,5 +15,5 @@
   "semver_policy": "semver-v2",
   "owner": "Nate Walker",
   "publication_status": "private_incubation",
-  "_note": "GitHub is canonical. GitHub Actions uses github-hosted ubuntu-latest with no alternate CI enrollment. Registry and artifact publication are deferred until explicit approval."
+  "_note": "GitHub is canonical. Intended remote CI is github-actions on github-hosted:ubuntu-latest, but private-incubation runs currently fail before job allocation (BuildFailed/startup_failure, zero jobs). Locked local validation is the active PR evidence gate; GitHub CLEAN is not CI evidence. Remote CI execution and branch protection/ruleset enforcement remain pending external account capability. Registry and artifact publication remain deferred until explicit approval."
 }
