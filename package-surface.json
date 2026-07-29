@@ -1,0 +1,19 @@
+{
+  "schema_version": "package-surface.v0.1",
+  "lane": "python-uv",
+  "language": "python",
+  "package_manager": "uv",
+  "package_name": "unmute-mlx-bridge",
+  "registry_target": "none",
+  "publish_command": "none — deferred until explicit publication approval",
+  "release_trigger": "manually approved release only",
+  "ci_gate": "uv sync --locked && uv run --locked pytest -q",
+  "ci_lane": "forgejo-actions",
+  "runner_label": "unmute-mlx-bridge",
+  "nix_shell": "devShells.default",
+  "nix_flake": "flake-check-required-before-publish",
+  "semver_policy": "semver-v2",
+  "owner": "Nate Walker",
+  "publication_status": "private_incubation",
+  "_note": "Forgejo nate/unmute-mlx-bridge is canonical for private-incubation development, PRs, CI, and review. GitHub nwalker85/unmute-mlx-bridge is a private passive mirror with dormant Actions. Portable CI targets the repo-owned Forgejo K3s label unmute-mlx-bridge; locked local validation remains the active gate until that lane runs the exact commit. Registry and artifact publication remain deferred until explicit approval."
+}
