@@ -8,7 +8,8 @@ Cross-reference: `AGENTS.md`, `package-surface.json`.
 | Field | Value |
 |---|---|
 | codename | unmute-mlx-bridge |
-| repo | nwalker85/unmute-mlx-bridge |
+| repo | `nate/unmute-mlx-bridge` (Forgejo, canonical private forge) |
+| mirror_repo | `nwalker85/unmute-mlx-bridge` (GitHub, private passive mirror) |
 | owner | Nate Walker |
 | filesystem_path | `~/src/platforms/runestack/unmute-mlx-bridge` |
 | platform_area | Runestack; community voice infrastructure |
@@ -49,30 +50,19 @@ authority is not required for v0.1.
 
 ## Runner and CI
 
-- `runner_labels`: repo-scoped Norns ARC label `norns-unmute-mlx-bridge` for
-  portable Linux/amd64 CI.
-- GitHub is canonical. The intended `ci_lane` is `github-actions` on
-  `norns-unmute-mlx-bridge`.
-- Verified 2026-07-26: `.github/workflows/ci.yml` passes local `actionlint` and
-  `yamllint`. The repository Actions API reports Actions enabled with
-  `allowed_actions=all`, but workflow-triggered runs stop before job allocation
-  as nameless `BuildFailed` / `startup_failure` runs with zero jobs. They
-  provide no remote test evidence.
-- Verified 2026-07-29: `norns-unmute-mlx-bridge` registered successfully and
-  its listener authenticated to GitHub. Fresh PR events still stopped as
-  `BuildFailed` / `startup_failure` with zero jobs, while the listener received
-  zero assigned jobs. The remaining blocker precedes runner scheduling.
-- Until GitHub restores workflow-start capability for this private repository,
-  locked local validation (`uv sync --locked`, `git diff --check`, and
+- `runner_labels`: repo-owned Norns K3s label `unmute-mlx-bridge` for portable
+  Linux/amd64 CI.
+- Forgejo is canonical. The intended `ci_lane` is `forgejo-actions` on
+  `unmute-mlx-bridge`.
+- GitHub is a private passive mirror; `.github/workflows/ci.yml` is dormant
+  until explicit public-publication cutover approval.
+- Locked local validation (`uv sync --locked`, `git diff --check`, and
   `uv run --locked pytest -q`) is the active private-incubation PR evidence
-  gate. Workflow changes also require local `actionlint` and `yamllint`
-  evidence.
+  gate until the K3s lane runs the exact commit. Workflow changes also require
+  local `actionlint` and `yamllint` evidence.
+- Advisory review uses Snotra with Fenrir only; no cloud fallback is allowed.
 - GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence, and
   must not be reported as a passing check.
-- The ARC release is deployed and ready but has no successful execution
-  evidence because GitHub never creates a job. Remote CI execution and branch
-  protection/ruleset enforcement remain pending external GitHub account
-  capability; current branch protection and ruleset API requests return `403`.
 - Registry and artifact publication are deferred until explicit approval.
 
 ## Observability
@@ -99,19 +89,19 @@ explicit decision. See the publication gate in `AGENTS.md`.
 | Gate | Status | Notes |
 |---|---|---|
 | Intake record | ✓ present | This document |
-| AGENTS.md | ✓ present | GitHub canonical, privacy boundaries, guardrails |
-| package-surface.json | ✓ present | GitHub CI posture, private_incubation |
-| Scaffold lane | ✓ python-uv | GitHub Actions on repo-scoped Norns ARC |
+| AGENTS.md | ✓ present | Forgejo canonical, privacy boundaries, guardrails |
+| package-surface.json | ✓ present | Forgejo CI posture, private_incubation |
+| Scaffold lane | ✓ python-uv | Forgejo Actions on repo-owned Norns K3s label |
 | SemVer policy | ✓ 0.y.z | semver-v2 from 0.1.0 |
 | Namespace decision | ✓ not applicable | Loopback model endpoints only |
 | SDK/API decision | ✓ recorded | MessagePack WS + HTTP ops |
 | Identity decision | ✓ not applicable | Optional static header only |
-| Runner decision | ✓ recorded | Repo-scoped `norns-unmute-mlx-bridge`, scale 0..1 |
+| Runner decision | ✓ recorded | Repo-owned `unmute-mlx-bridge`, scale 0..1 |
 | Observability decision | ✓ recorded | Prometheus in package; dashboards downstream |
-| CI workflow definition | ✓ locally validated | `.github/workflows/ci.yml` passes actionlint and yamllint |
+| CI workflow definition | pending validation | `.forgejo/workflows/ci.yml` must pass local lint and a Forgejo canary |
 | Private-incubation PR evidence | ✓ active local gate | Locked sync, diff check, and portable tests |
-| Remote CI execution | blocked upstream | ARC live; GitHub creates zero jobs |
-| Branch protection/rulesets | pending external capability | GitHub API returns 403 |
+| Remote CI execution | pending runner PR | K3s lane must deploy and run the exact commit |
+| Branch protection | pending CI canary | Configure after the required Forgejo contexts are proven |
 | Publication gate | pending | Private incubation; explicit approval required |
 | ADR: production cutover | pending | Required before any downstream integration |
 | ADR: publication | pending | Required before visibility change |

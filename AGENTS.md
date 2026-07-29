@@ -5,48 +5,41 @@ remotes, deploy surfaces, or safety boundaries change.
 
 ## Source Of Truth
 
-- Primary git: https://github.com/nwalker85/unmute-mlx-bridge (GitHub, canonical)
-- Project tracker: `docs/repo-intake.md` and GitHub PRs are the durable tracking surfaces for this repo
+- Primary git: Forgejo `nate/unmute-mlx-bridge` (canonical private forge;
+  local remote `origin`)
+- Passive mirror: https://github.com/nwalker85/unmute-mlx-bridge (private;
+  local remote `github`)
+- Project tracker: `docs/repo-intake.md` and Forgejo PRs are the durable
+  tracking surfaces for this repo
 - Human docs: `docs/` in this repo
 - Production URL or runtime: none — private incubation, no production cutover
 
 ## Repository Posture
 
-- **GitHub is canonical** for this repo. It is a publication candidate targeting
-  community release under Apache-2.0.
+- **Forgejo is canonical** for development, PRs, CI, and review while this
+  repository is in private incubation. GitHub is a private passive mirror.
 - The repo remains **private** throughout incubation. Visibility change requires
   explicit publication approval from Nate (see `docs/repo-intake.md`).
-- **GitHub Actions is the intended remote CI surface**, using the repo-scoped
-  Norns ARC scale set `norns-unmute-mlx-bridge` for portable Linux/amd64 CI.
+- **Forgejo Actions is the intended remote CI surface**, using the repo-owned
+  Norns K3s runner label `unmute-mlx-bridge` for portable Linux/amd64 CI.
+- GitHub Actions is dormant while GitHub is a passive mirror.
+- After explicit public-publication approval, reverse the authority boundary:
+  GitHub becomes canonical and Forgejo becomes a pull/DR mirror.
 - Registry and artifact publication are deferred until explicit approval.
 
 ### Verified Private-Incubation Enforcement State
 
 Verified through 2026-07-29:
 
-- `.github/workflows/ci.yml` passes local `actionlint` and `yamllint`
-  validation.
-- The repository Actions API reports Actions enabled with
-  `allowed_actions=all`, but workflow-triggered runs currently stop before job
-  allocation as nameless `BuildFailed` / `startup_failure` runs with zero jobs.
-  Those runs provide no remote test evidence.
-- On 2026-07-29, the `norns-unmute-mlx-bridge` scale set registered
-  successfully and its listener authenticated to GitHub. Fresh PR events still
-  stopped as `BuildFailed` / `startup_failure` with zero jobs; the listener
-  received zero assigned jobs. The remaining blocker precedes runner
-  scheduling.
-- Until GitHub restores workflow-start capability for this private repository,
-  locked local validation is the active private-incubation PR evidence gate:
-  `uv sync --locked`, `git diff --check`, and
-  `uv run --locked pytest -q`. Include `actionlint` and `yamllint` evidence
-  when workflow files change.
+- The private repository and its branch history are present on Forgejo, and
+  Forgejo bootstrap CI has executed successfully.
+- The repo-owned K3s runner lane is proposed separately. Until that lane is
+  deployed and runs this repository's exact commit, locked local validation is
+  the active private-incubation PR evidence gate: `uv sync --locked`,
+  `git diff --check`, and `uv run --locked pytest -q`.
+- Include `actionlint` and `yamllint` evidence when workflow files change.
 - GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence. Do
   not report it as a passing check or substitute it for test results.
-- The ARC release is deployed and ready but has no successful execution
-  evidence because GitHub never creates a job. Remote CI execution and branch
-  protection/ruleset enforcement remain pending external GitHub account
-  capability; current API attempts to inspect or configure branch policy
-  return `403`.
 
 ## Privacy and Data Boundaries
 
@@ -73,6 +66,8 @@ Verified through 2026-07-29:
   not run on portable CI. Use `pytest -m hardware` or an equivalent explicit
   marker to gate them.
 - Portable CI must not download model weights.
+- Advisory review must use Snotra with the Fenrir backend. Do not configure
+  Anthropic, OpenAI, or an automatic cloud fallback.
 
 ## Build And Test
 
@@ -97,10 +92,8 @@ uv run --locked pytest -q
 
 ## Deploy Model
 
-- Intended remote CI: GitHub Actions (`.github/workflows/ci.yml`) on
-  `norns-unmute-mlx-bridge`; the scale set is live, but locked local validation
-  remains the active private-incubation PR evidence gate while GitHub fails
-  before creating a job
+- Intended remote CI: Forgejo Actions (`.forgejo/workflows/ci.yml`) on the
+  repo-owned `unmute-mlx-bridge` K3s runner label
 - Artifact: none until publication approved
 - Runtime host: local Apple Silicon (canary only)
 - Migration command: not applicable
@@ -114,8 +107,8 @@ claiming a release, verify:
 - `registry_target` — currently `none`; must be set before any publication
 - `publication_status` — currently `private_incubation`
 - `semver_policy` — `semver-v2`, starting at `0.1.0`
-- `ci_lane` — `github-actions`
-- `runner_label` — `norns-unmute-mlx-bridge`
+- `ci_lane` — `forgejo-actions`
+- `runner_label` — `unmute-mlx-bridge`
 - `nix_flake` — `flake-check-required-before-publish`
 
 If any field is still a placeholder, planned value, or deferral, report the

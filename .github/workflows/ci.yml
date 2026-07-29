@@ -1,15 +1,11 @@
 ---
 name: ci
 
-# GitHub is canonical for this publication candidate. Portable CI uses the
-# repo-scoped Norns ARC scale set. Registry and artifact publication are
-# deferred until explicit approval.
+# DORMANT: GitHub is a private passive mirror while Forgejo is canonical.
+# Re-enable automatic triggers only after explicit publication approval.
 
 on:  # yamllint disable-line rule:truthy
-  pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read

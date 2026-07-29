@@ -33,8 +33,10 @@ not fork Unmute, own conversation state, or embed consumer-specific logic.
 │   ├── architecture/decisions/   ADRs
 │   ├── runbooks/                 operational procedures
 │   └── superpowers/specs/        design spec (do not modify)
+├── .forgejo/
+│   └── workflows/ci.yml          active private-incubation portable CI
 ├── .github/
-│   └── workflows/ci.yml          GitHub Actions portable CI
+│   └── workflows/ci.yml          dormant publication-cutover CI
 └── flake.nix                     Nix dev shell (python312 + uv)
 ```
 
@@ -56,7 +58,8 @@ git diff --check
 
 ## Deploy And Runtime
 
-- CI: GitHub Actions (`.github/workflows/ci.yml`), `ubuntu-latest`
+- CI: Forgejo Actions (`.forgejo/workflows/ci.yml`), repo-owned K3s label
+  `unmute-mlx-bridge`
 - Artifact: none until publication approved
 - Runtime: local Apple Silicon for canary runs
 - Logs: none (canary artifacts are stored outside CI)
