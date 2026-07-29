@@ -391,6 +391,10 @@ async def _serve(config: TtsConfig) -> None:
         config.host,
         config.port,
         process_request=process_request,
+        # Stock Unmute streams one WebSocket data frame per LLM word. Keep a
+        # bounded burst in memory so socket reads don't pause before later Ping
+        # control frames while MLX is still generating an earlier word.
+        max_queue=1024,
     ):
         logger.info("tts: listening on ws://%s:%d%s", config.host, config.port, PROTOCOL_PATH)
         try:

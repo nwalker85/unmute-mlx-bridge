@@ -15,6 +15,7 @@ import pytest
 import websockets
 from websockets.asyncio.server import serve
 
+from unmute_mlx_bridge.tts import server as tts_server_module
 from unmute_mlx_bridge.config import TtsConfig
 from unmute_mlx_bridge.observability import build_process_request
 from unmute_mlx_bridge.tts.engine import TtsStepEvent
@@ -358,3 +359,58 @@ async def test_unauthorized_connection_is_rejected_before_upgrade(tts_server):
     with pytest.raises(websockets.exceptions.InvalidStatus) as exc_info:
         await websockets.connect(f"ws://127.0.0.1:{port}{PROTOCOL_PATH}?format=PcmMessagePack")
     assert exc_info.value.response.status_code == 401
+
+
+async def test_streamed_word_burst_does_not_block_keepalive_pong(
+    monkeypatch, unused_tcp_port
+):
+    @dataclass
+    class SlowWordSession:
+        bundle: object
+        voice: str | None
+        max_gen_length: int
+
+        def stream_text(self, _text: str, _cancelled=lambda: False):
+            time.sleep(1)
+            return iter(())
+
+        def stream_eos(self, _cancelled=lambda: False):
+            return iter(())
+
+    config = TtsConfig(
+        host="127.0.0.1",
+        port=unused_tcp_port,
+        hf_repo="unused",
+        voice_repo="unused",
+        default_voice="unused.wav",
+        quantize_bits=None,
+        max_gen_length=1000,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+    )
+    server = TtsServer(
+        config,
+        bundle_loader=lambda: FakeBundle(),
+        session_cls=SlowWordSession,
+    )
+    monkeypatch.setattr(tts_server_module, "TtsServer", lambda _config: server)
+
+    serve_task = asyncio.create_task(tts_server_module._serve(config))
+    try:
+        await asyncio.sleep(0.05)
+        async with await _connect(unused_tcp_port) as websocket:
+            assert await _recv_message(websocket) == {"type": "Ready"}
+            for sequence in range(40):
+                await websocket.send(
+                    msgpack.packb({"type": "Text", "text": f"word-{sequence} "})
+                )
+
+            # Give the server time to fill its receive queue and pause socket
+            # reads while the first word is still generating.
+            await asyncio.sleep(0.05)
+            pong = await websocket.ping(b"after-word-burst")
+            await asyncio.wait_for(pong, timeout=0.5)
+    finally:
+        serve_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await serve_task
