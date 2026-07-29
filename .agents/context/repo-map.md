@@ -9,25 +9,37 @@ not fork Unmute, own conversation state, or embed consumer-specific logic.
 
 ## Entry Points
 
-- Application: `unmute-mlx-stt` (port 8090, planned) and `unmute-mlx-tts`
-  (port 8089, planned) — not yet implemented in scaffold.
+- Application: `unmute-mlx-stt` (port 8090) and `unmute-mlx-tts` (port 8089) —
+  implemented, real MLX inference.
 - API: `/api/asr-streaming` (STT WebSocket), `/api/tts_streaming` (TTS
-  WebSocket), `/healthz`, `/readyz`, `/metrics` — planned, not yet implemented.
-- Worker: none in scaffold.
-- CLI: `unmute-mlx-bridge` entry point (scaffold stub only).
-- Tests: `tests/` — portable smoke test; hardware tests behind `pytest.mark.hardware`.
+  WebSocket), `/healthz`, `/readyz`, `/metrics` on each process — implemented.
+- Worker: none.
+- CLI: `unmute-mlx-bridge` entry point prints usage; use `unmute-mlx-stt` /
+  `unmute-mlx-tts` to run a server.
+- Tests: `tests/` — portable protocol + full-session conformance suite (default
+  `pytest` run, no model weights); `tests/hardware/` — real-MLX suite behind
+  `pytest.mark.hardware`.
 
 ## Important Directories
 
 ```text
 .
 ├── AGENTS.md                     repo authority and guardrails
+├── PROTOCOL.md                   wire-format compatibility writeup
 ├── package-surface.json          machine-readable release contract
 ├── pyproject.toml                Python package definition (hatchling, uv)
 ├── src/
-│   └── unmute_mlx_bridge/        Python package (scaffold stub)
+│   └── unmute_mlx_bridge/
+│       ├── protocol/              msgpack message models + framing (stt.py, tts.py, wire.py)
+│       ├── stt/                   engine.py (MLX inference), server.py (WS server)
+│       ├── tts/                   engine.py (MLX inference), server.py (WS server)
+│       ├── observability.py       /healthz, /readyz, /metrics, auth
+│       └── config.py              environment-driven server configuration
 ├── tests/
-│   └── test_smoke.py             portable smoke test
+│   ├── test_protocol_{stt,tts}.py         wire-shape tests
+│   ├── test_{stt,tts}_server_conformance.py  full session state machine, fake engine
+│   ├── test_smoke.py                      portable smoke test
+│   └── hardware/                          real MLX inference, opt-in
 ├── docs/
 │   ├── repo-intake.md            lifecycle decisions
 │   ├── architecture/decisions/   ADRs

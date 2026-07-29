@@ -3,15 +3,37 @@ name = "unmute-mlx-bridge"
 version = "0.1.0"
 description = "Apple Silicon MLX streaming STT/TTS servers compatible with the Kyutai Unmute model protocol"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  # `mlx`/`moshi-mlx` publish wheels for Apple Silicon only (a partial Linux
+  # x86_64 `mlx` wheel exists but still pulls in the macOS-only `mlx-metal`
+  # backend package, so it cannot actually resolve on Linux). Marker-gating
+  # them here means `uv sync --locked` succeeds on portable Linux CI — the
+  # `src/unmute_mlx_bridge/{stt,tts}/engine.py` modules that import them defer
+  # those imports into function bodies for the same reason, so importing the
+  # rest of the package (protocol layer, both servers' session/HTTP logic)
+  # never requires MLX to be installed.
+  "moshi-mlx>=0.2.6; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx>=0.26; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "numpy>=2.0",
+  "msgpack>=1.1",
+  "pydantic>=2.9",
+  "websockets>=13",
+  "prometheus-client>=0.21",
+  "sentencepiece>=0.2",
+  "huggingface_hub>=0.25",
+  "sphn>=0.1.4",
+]
 
 [dependency-groups]
 dev = [
   "pytest",
+  "pytest-asyncio>=0.24",
 ]
 
 [project.scripts]
 unmute-mlx-bridge = "unmute_mlx_bridge:main"
+unmute-mlx-stt = "unmute_mlx_bridge.stt.server:run"
+unmute-mlx-tts = "unmute_mlx_bridge.tts.server:run"
 
 [build-system]
 requires = ["hatchling"]
@@ -22,6 +44,15 @@ packages = ["src/unmute_mlx_bridge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 markers = [
   "hardware: opt-in Apple Silicon hardware tests (requires real model weights, never run on portable CI)",
 ]
+addopts = ["-m", "not hardware"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

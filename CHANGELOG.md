@@ -17,8 +17,59 @@ compatibility or version labels.
 - `docs/repo-intake.md` with lifecycle decisions.
 - `package-surface.json` recording GitHub-primary exception posture.
 - `.github/workflows/ci.yml` using GitHub Actions for portable CI.
+- `PROTOCOL.md`: annotated wire-format writeup for `/api/asr-streaming` and
+  `/api/tts_streaming`, verified against `kyutai-labs/unmute` and
+  `kyutai-labs/moshi` source at the commits pinned in the design spec.
+- `src/unmute_mlx_bridge/protocol/`: pydantic msgpack message models for both
+  endpoints, matching real `moshi-server`'s `OutMsg`/`InMsg` shapes field-for-field.
+- `src/unmute_mlx_bridge/stt/`: real MLX STT inference (`engine.py`, backed by
+  `moshi-mlx` + `kyutai/stt-1b-en_fr-candle`) and a `moshi-server`-compatible
+  `/api/asr-streaming` WebSocket server (`server.py`), including the
+  Word/EndWord segmentation state machine ported from `moshi-core/src/asr.rs`.
+- `src/unmute_mlx_bridge/tts/`: real MLX TTS inference (`engine.py`, backed by
+  `moshi-mlx` + `kyutai/tts-1.6b-en_fr`) and a `moshi-server`-compatible
+  `/api/tts_streaming` WebSocket server (`server.py`), including word-timing
+  derivation from the TTS state machine's transcript.
+- `src/unmute_mlx_bridge/observability.py`: shared `/healthz`, `/readyz`,
+  `/metrics`, and pre-upgrade auth (`kyutai-api-key` header / `auth_id` query
+  param, matching real `moshi-server`).
+- `src/unmute_mlx_bridge/config.py`: environment-driven server configuration.
+- Portable protocol + full-session conformance test suite
+  (`tests/test_protocol_{stt,tts}.py`, `tests/test_{stt,tts}_server_conformance.py`)
+  exercising the real server classes against a deterministic fake engine over a
+  real WebSocket connection — no model weights required.
+- Opt-in hardware test suite (`tests/hardware/`, `pytest -m hardware`): real
+  MLX inference on Apple Silicon, real audio fixtures synthesized with macOS
+  `say`, transcription/synthesis correctness and state-leak checks.
 - Repo-scoped `norns-unmute-mlx-bridge` ARC runner configuration for portable
   Linux/amd64 CI; Apple Silicon hardware tests remain opt-in.
+
+### Fixed
+
+- The default STT checkpoint is now `kyutai/stt-1b-en_fr-candle`. Unlike the
+  MLX-only checkpoint, it includes the extra heads stock Unmute requires for
+  the `Step.prs[2]` semantic pause signal; the weights still execute through
+  `moshi-mlx`.
+- TTS now emits `Ready` immediately after channel admission and initializes an
+  uncached voice off the event loop. This keeps first-use voice downloads from
+  exceeding stock Unmute's 500 ms startup budget.
+- `moshi-mlx`/`mlx` are marker-gated to `sys_platform == 'darwin' and
+  platform_machine == 'arm64'` in `pyproject.toml`, and every runtime import of
+  them in `stt/engine.py` / `tts/engine.py` is deferred into the function that
+  actually needs it (module-level imports removed). Without this, adding real
+  MLX inference would have broken `uv sync --locked` on the portable Linux CI
+  lane entirely — `mlx`'s Linux wheel still requires the
+  macOS-only `mlx-metal` backend package, so it cannot resolve on Linux at all.
+  This matches the design spec's own requirement that MLX imports stay behind
+  explicit adapter construction so the portable suite runs on Linux CI.
+
+### Known limitations
+
+- Single active session per process (documented, see `PROTOCOL.md`).
+- Ogg/Opus framing and TTS custom voice-embedding cloning are not implemented
+  (documented non-goals; Unmute's own backend client never uses either).
+- Not yet run as a full microphone-to-speaker canary — see README §What's
+  proven / what's not. Stock Unmute process compatibility is proven.
 
 ## [0.1.0] — planned
 

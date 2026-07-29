@@ -107,8 +107,10 @@ The first release admits one active WebSocket session per process. A second
 connection receives a protocol `Error` message and closes cleanly rather than
 waiting in an unbounded queue.
 
-The default STT model is `kyutai/stt-1b-en_fr-mlx` because its documented
-streaming delay is 0.5 seconds and it provides semantic VAD. The default TTS
+The default STT model is `kyutai/stt-1b-en_fr-candle`, loaded through
+`moshi-mlx`. Live stock-Unmute verification showed that the similarly named
+`kyutai/stt-1b-en_fr-mlx` checkpoint transcribes audio but omits the extra
+heads required for the `Step.prs[2]` semantic-VAD pause signal. The default TTS
 model is `kyutai/tts-1.6b-en_fr`. Model identifiers and TTS quantization are
 configuration values. The reference canary starts TTS at 8-bit quantization
 and records whether it is faster than real time before considering higher
@@ -357,6 +359,6 @@ branding beyond factual compatibility and attribution.
 - [Kyutai Unmute](https://github.com/kyutai-labs/unmute)
 - [Kyutai Delayed Streams Modeling](https://github.com/kyutai-labs/delayed-streams-modeling)
 - [Kyutai Moshi](https://github.com/kyutai-labs/moshi)
-- [Kyutai STT 1B English/French MLX model](https://huggingface.co/kyutai/stt-1b-en_fr-mlx)
+- [Kyutai STT 1B English/French Candle checkpoint](https://huggingface.co/kyutai/stt-1b-en_fr-candle)
 - [Kyutai TTS 1.6B English/French model](https://huggingface.co/kyutai/tts-1.6b-en_fr)
 - [Delayed Streams Modeling paper](https://arxiv.org/abs/2509.08753)
