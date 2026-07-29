@@ -106,7 +106,20 @@ class SttModelBundle:
         lm.set_dtype(mx.bfloat16)
 
         logger.info("stt: loading LM weights from %s", moshi_weights)
-        lm.load_pytorch_weights(moshi_weights, lm_config, strict=True)
+        # `-candle` repos (e.g. kyutai/stt-1b-en_fr-candle) ship genuine PyTorch
+        # state-dict-shaped safetensors (keys like `out_norm.alpha`) and need
+        # `load_pytorch_weights`'s key remapping/reshaping. `-mlx` repos (our
+        # default, kyutai/stt-1b-en_fr-mlx) ship checkpoints that are already
+        # MLX-native (verified directly: `mx.load(model.safetensors)` on the
+        # downloaded file shows `out_norm.weight`, not `out_norm.alpha`, and 131
+        # keys matching `Lm`'s own parameter tree) and must go through the plain
+        # `nn.Module.load_weights`, exactly as
+        # `delayed-streams-modeling/scripts/stt_from_file_mlx.py` branches on
+        # `args.hf_repo.endswith("-candle")` to decide between the two loaders.
+        if hf_repo.endswith("-candle"):
+            lm.load_pytorch_weights(moshi_weights, lm_config, strict=True)
+        else:
+            lm.load_weights(moshi_weights, strict=True)
         if quantize_bits is not None:
             logger.info("stt: quantizing LM to %d bits", quantize_bits)
             group_size = 32 if quantize_bits == 4 else 64
