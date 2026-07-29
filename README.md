@@ -167,9 +167,10 @@ description for the numbers observed on the reference host used to build this.
 
 - macOS 14 or newer on Apple Silicon (`arm64`).
 - Python `>=3.12,<3.13`, package manager `uv`.
-- Portable CI runs on `ubuntu-latest` (GitHub Actions) without model weights —
-  it exercises the protocol layer and both servers' full session state
-  machine against a fake engine, not real MLX.
+- Portable CI is configured for the repo-scoped Norns ARC label
+  `norns-unmute-mlx-bridge` without model weights; it exercises the protocol
+  layer and both servers' full session state machine against a fake engine,
+  not real MLX.
 - Hardware tests (real models, Apple Silicon) are opt-in: `pytest -m hardware`.
 
 ## Repository Map
@@ -203,7 +204,7 @@ The `package-surface.json` records the release gates. Before any release:
 - `publication_status` — `private_incubation`
 - `semver_policy` — `semver-v2` starting at `0.1.0`
 - `ci_lane` — `github-actions`
-- `runner_label` — `github-hosted:ubuntu-latest`
+- `runner_label` — `norns-unmute-mlx-bridge`
 - `nix_flake` — `flake-check-required-before-publish`
 
 ## Attribution

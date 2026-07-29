@@ -1,9 +1,9 @@
 ---
 name: ci
 
-# GitHub is canonical for this publication candidate. GitHub Actions uses
-# github-hosted ubuntu-latest with no alternate CI enrollment. Registry and
-# artifact publication are deferred until explicit approval.
+# GitHub is canonical for this publication candidate. Portable CI uses the
+# repo-scoped Norns ARC scale set. Registry and artifact publication are
+# deferred until explicit approval.
 
 on:  # yamllint disable-line rule:truthy
   pull_request:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   python:
-    runs-on: ubuntu-latest
+    runs-on: norns-unmute-mlx-bridge
     steps:
       # actions/checkout v6.0.2
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd

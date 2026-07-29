@@ -16,8 +16,8 @@ remotes, deploy surfaces, or safety boundaries change.
   community release under Apache-2.0.
 - The repo remains **private** throughout incubation. Visibility change requires
   explicit publication approval from Nate (see `docs/repo-intake.md`).
-- **GitHub Actions is the intended remote CI surface**, using GitHub-hosted
-  `ubuntu-latest`. There is no alternate CI enrollment.
+- **GitHub Actions is the intended remote CI surface**, using the repo-scoped
+  Norns ARC scale set `norns-unmute-mlx-bridge` for portable Linux/amd64 CI.
 - Registry and artifact publication are deferred until explicit approval.
 
 ### Verified Private-Incubation Enforcement State
@@ -30,16 +30,17 @@ Verified on 2026-07-26:
   `allowed_actions=all`, but workflow-triggered runs currently stop before job
   allocation as nameless `BuildFailed` / `startup_failure` runs with zero jobs.
   Those runs provide no remote test evidence.
-- Until private GitHub Actions job execution is restored, locked local
-  validation is the active private-incubation PR evidence gate:
+- Until the Norns ARC scale set is deployed and passes its first canary,
+  locked local validation is the active private-incubation PR evidence gate:
   `uv sync --locked`, `git diff --check`, and
   `uv run --locked pytest -q`. Include `actionlint` and `yamllint` evidence
   when workflow files change.
 - GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence. Do
   not report it as a passing check or substitute it for test results.
-- Remote CI execution and branch protection/ruleset enforcement remain
-  pending external GitHub account capability. Current API attempts to inspect
-  or configure branch protection and rulesets return `403`.
+- Remote CI execution remains pending ARC deployment and canary evidence.
+  Branch protection/ruleset enforcement remains pending external GitHub
+  account capability; current API attempts to inspect or configure it return
+  `403`.
 
 ## Privacy and Data Boundaries
 
@@ -90,9 +91,9 @@ uv run --locked pytest -q
 
 ## Deploy Model
 
-- Intended remote CI: GitHub Actions (`.github/workflows/ci.yml`); locked local
-  validation is the active private-incubation PR evidence gate while runs fail
-  before job allocation
+- Intended remote CI: GitHub Actions (`.github/workflows/ci.yml`) on
+  `norns-unmute-mlx-bridge`; locked local validation remains the active
+  private-incubation PR evidence gate until the ARC canary passes
 - Artifact: none until publication approved
 - Runtime host: local Apple Silicon (canary only)
 - Migration command: not applicable
@@ -107,7 +108,7 @@ claiming a release, verify:
 - `publication_status` — currently `private_incubation`
 - `semver_policy` — `semver-v2`, starting at `0.1.0`
 - `ci_lane` — `github-actions`
-- `runner_label` — `github-hosted:ubuntu-latest`
+- `runner_label` — `norns-unmute-mlx-bridge`
 - `nix_flake` — `flake-check-required-before-publish`
 
 If any field is still a placeholder, planned value, or deferral, report the
