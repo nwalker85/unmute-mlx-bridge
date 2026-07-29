@@ -8,12 +8,12 @@
   "publish_command": "none — deferred until explicit publication approval",
   "release_trigger": "manually approved release only",
   "ci_gate": "uv sync --locked && uv run --locked pytest -q",
-  "ci_lane": "github-actions",
-  "runner_label": "norns-unmute-mlx-bridge",
+  "ci_lane": "forgejo-actions",
+  "runner_label": "unmute-mlx-bridge",
   "nix_shell": "devShells.default",
   "nix_flake": "flake-check-required-before-publish",
   "semver_policy": "semver-v2",
   "owner": "Nate Walker",
   "publication_status": "private_incubation",
-  "_note": "GitHub is canonical. Portable CI is configured for the live repo-scoped Norns ARC label norns-unmute-mlx-bridge. On 2026-07-29 the scale set registered and its listener authenticated, but fresh PR events still failed before job allocation (BuildFailed/startup_failure, zero jobs; assigned job count zero). The remaining blocker precedes runner scheduling. Locked local validation remains the active PR evidence gate; GitHub CLEAN is not CI evidence. Branch protection/ruleset enforcement remains pending external account capability. Registry and artifact publication remain deferred until explicit approval."
+  "_note": "Forgejo nate/unmute-mlx-bridge is canonical for private-incubation development, PRs, CI, and review. GitHub nwalker85/unmute-mlx-bridge is a private passive mirror with dormant Actions. Portable CI targets the repo-owned Forgejo K3s label unmute-mlx-bridge; locked local validation remains the active gate until that lane runs the exact commit. Registry and artifact publication remain deferred until explicit approval."
 }
