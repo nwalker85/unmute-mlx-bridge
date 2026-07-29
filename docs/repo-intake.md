@@ -58,17 +58,21 @@ authority is not required for v0.1.
   `allowed_actions=all`, but workflow-triggered runs stop before job allocation
   as nameless `BuildFailed` / `startup_failure` runs with zero jobs. They
   provide no remote test evidence.
-- Until the Norns ARC scale set is deployed and passes its first canary,
+- Verified 2026-07-29: `norns-unmute-mlx-bridge` registered successfully and
+  its listener authenticated to GitHub. Fresh PR events still stopped as
+  `BuildFailed` / `startup_failure` with zero jobs, while the listener received
+  zero assigned jobs. The remaining blocker precedes runner scheduling.
+- Until GitHub restores workflow-start capability for this private repository,
   locked local validation (`uv sync --locked`, `git diff --check`, and
   `uv run --locked pytest -q`) is the active private-incubation PR evidence
   gate. Workflow changes also require local `actionlint` and `yamllint`
   evidence.
 - GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence, and
   must not be reported as a passing check.
-- Remote CI execution remains pending ARC deployment and canary evidence.
-  Branch protection/ruleset enforcement remains pending external GitHub
-  account capability; current branch protection and ruleset API requests
-  return `403`.
+- The ARC release is deployed and ready but has no successful execution
+  evidence because GitHub never creates a job. Remote CI execution and branch
+  protection/ruleset enforcement remain pending external GitHub account
+  capability; current branch protection and ruleset API requests return `403`.
 - Registry and artifact publication are deferred until explicit approval.
 
 ## Observability
@@ -106,7 +110,7 @@ explicit decision. See the publication gate in `AGENTS.md`.
 | Observability decision | ✓ recorded | Prometheus in package; dashboards downstream |
 | CI workflow definition | ✓ locally validated | `.github/workflows/ci.yml` passes actionlint and yamllint |
 | Private-incubation PR evidence | ✓ active local gate | Locked sync, diff check, and portable tests |
-| Remote CI execution | pending ARC canary | Historical hosted failure; ARC not yet proven |
+| Remote CI execution | blocked upstream | ARC live; GitHub creates zero jobs |
 | Branch protection/rulesets | pending external capability | GitHub API returns 403 |
 | Publication gate | pending | Private incubation; explicit approval required |
 | ADR: production cutover | pending | Required before any downstream integration |

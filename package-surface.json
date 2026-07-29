@@ -15,5 +15,5 @@
   "semver_policy": "semver-v2",
   "owner": "Nate Walker",
   "publication_status": "private_incubation",
-  "_note": "GitHub is canonical. Portable CI is configured for the repo-scoped Norns ARC label norns-unmute-mlx-bridge. Earlier private GitHub-hosted runs failed before job allocation (BuildFailed/startup_failure, zero jobs). Locked local validation remains the active PR evidence gate until the ARC canary passes; GitHub CLEAN is not CI evidence. Branch protection/ruleset enforcement remains pending external account capability. Registry and artifact publication remain deferred until explicit approval."
+  "_note": "GitHub is canonical. Portable CI is configured for the live repo-scoped Norns ARC label norns-unmute-mlx-bridge. On 2026-07-29 the scale set registered and its listener authenticated, but fresh PR events still failed before job allocation (BuildFailed/startup_failure, zero jobs; assigned job count zero). The remaining blocker precedes runner scheduling. Locked local validation remains the active PR evidence gate; GitHub CLEAN is not CI evidence. Branch protection/ruleset enforcement remains pending external account capability. Registry and artifact publication remain deferred until explicit approval."
 }
