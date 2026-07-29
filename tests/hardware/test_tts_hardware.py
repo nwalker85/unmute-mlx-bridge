@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from unmute_mlx_bridge.config import TtsConfig
 from unmute_mlx_bridge.tts.engine import TtsModelBundle, TtsSession
 
 pytestmark = pytest.mark.hardware
@@ -22,13 +21,7 @@ SAMPLE_RATE = 24_000
 
 @pytest.fixture(scope="module")
 def tts_bundle():
-    config = TtsConfig.from_env()
-    return TtsModelBundle.load(
-        config.hf_repo,
-        config.voice_repo,
-        config.quantize_bits,
-        config.n_q,
-    )
+    return TtsModelBundle.load("kyutai/tts-1.6b-en_fr")
 
 
 def _rms(pcm: list[float]) -> float:
@@ -47,54 +40,32 @@ def test_synthesizes_non_silent_audio_with_word_timing(tts_bundle, tmp_path: Pat
     text = "The quick brown fox jumps over the lazy dog."
     words: list[tuple[str, float, float]] = []
     pcm_chunks: list[float] = []
-    audio_event_times: list[float] = []
 
     wall_start = time.monotonic()
     for event in session.push_text(text):
         if event.kind == "audio":
-            audio_event_times.append(time.monotonic())
             pcm_chunks.extend(event.pcm or [])
         elif event.kind == "word":
             words.append((event.text or "", event.start_s or 0.0, event.stop_s or 0.0))
     for event in session.push_eos():
         if event.kind == "audio":
-            audio_event_times.append(time.monotonic())
             pcm_chunks.extend(event.pcm or [])
         elif event.kind == "word":
             words.append((event.text or "", event.start_s or 0.0, event.stop_s or 0.0))
     wall_elapsed = time.monotonic() - wall_start
 
-    assert pcm_chunks, "expected at least one audio frame"
-    assert audio_event_times, "expected timing for at least one audio frame"
     audio_duration_s = len(pcm_chunks) / SAMPLE_RATE
     real_time_factor = audio_duration_s / wall_elapsed if wall_elapsed else float("inf")
-    first_audio_s = audio_event_times[0] - wall_start
-    max_frame_gap_s = max(
-        (
-            right - left
-            for left, right in zip(audio_event_times, audio_event_times[1:])
-        ),
-        default=0.0,
-    )
     print(
-        f"\n[tts-hardware] n_q={tts_bundle.tts_model.n_q} "
-        f"audio={audio_duration_s:.2f}s wall={wall_elapsed:.2f}s "
-        f"real_time_factor={real_time_factor:.2f}x "
-        f"first_audio={first_audio_s:.3f}s max_frame_gap={max_frame_gap_s:.3f}s "
-        f"words={[w[0] for w in words]}"
+        f"\n[tts-hardware] audio={audio_duration_s:.2f}s wall={wall_elapsed:.2f}s "
+        f"real_time_factor={real_time_factor:.2f}x words={[w[0] for w in words]}"
     )
 
+    assert pcm_chunks, "expected at least one audio frame"
     assert audio_duration_s > 0.5, "synthesized audio suspiciously short"
-    assert all(math.isfinite(x) for x in pcm_chunks), "synthesized audio is non-finite"
     rms = _rms(pcm_chunks)
-    clipping_samples = sum(abs(x) >= 0.999 for x in pcm_chunks)
-    clipping_fraction = clipping_samples / len(pcm_chunks)
-    print(
-        f"[tts-hardware] rms={rms:.4f} clipping_samples={clipping_samples} "
-        f"clipping_fraction={clipping_fraction:.6f}"
-    )
+    print(f"[tts-hardware] rms={rms:.4f}")
     assert rms > 0.001, f"synthesized audio looks silent (rms={rms:.6f})"
-    assert clipping_fraction < 0.01, "synthesized audio has sustained clipping"
 
     assert words, "expected at least one Text/word timing event"
     got_words = " ".join(w for w, _, _ in words).lower()

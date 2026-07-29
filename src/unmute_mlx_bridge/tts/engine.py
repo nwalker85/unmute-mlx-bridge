@@ -30,7 +30,6 @@ import sentencepiece
 # the portable conformance suite) stays importable on platforms without MLX.
 if TYPE_CHECKING:
     import mlx.core as mx
-    from moshi_mlx.models import Lm
     from moshi_mlx.models.generate import LmGen
     from moshi_mlx.models.tts import TTSModel
     from moshi_mlx.modules.conditioner import ConditionTensor
@@ -42,16 +41,6 @@ if TYPE_CHECKING:
 DEFAULT_DSM_TTS_VOICE_REPO = "kyutai/tts-voices"
 
 logger = logging.getLogger(__name__)
-
-
-def _limit_generated_codebooks(lm: Lm, n_q: int) -> None:
-    available = lm.cfg.depformer.num_slices
-    if n_q < 1 or n_q > available:
-        raise ValueError(
-            f"generated audio codebooks must be between 1 and {available}, got {n_q}"
-        )
-    lm.depformer.slices = lm.depformer.slices[:n_q]
-    lm.cfg.depformer.num_slices = n_q
 
 
 @dataclass
@@ -107,7 +96,6 @@ class TtsModelBundle:
         tokenizer_path = hf_get(raw_config["tokenizer_name"], hf_repo)
 
         lm_config = models.LmConfig.from_config_dict(raw_config)
-        checkpoint_generated_codebooks = lm_config.generated_codebooks
         # Works around a bug in moshi_mlx<=0.3.0's ring KV-cache handling for the
         # TTS depformer, per the upstream reference script's own comment.
         lm_config.transformer.max_seq_len = lm_config.transformer.context
@@ -116,30 +104,19 @@ class TtsModelBundle:
 
         logger.info("tts: loading LM weights from %s", moshi_weights)
         lm.load_pytorch_weights(str(moshi_weights), lm_config, strict=True)
-
-        text_tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer_path))  # type: ignore[call-arg]
-
-        logger.info("tts: loading Mimi audio tokenizer from %s", mimi_weights)
-        audio_tokenizer = models.mimi.Mimi(
-            models.mimi_202407(checkpoint_generated_codebooks)
-        )
-        audio_tokenizer.load_pytorch_weights(str(mimi_weights), strict=True)
-
-        logger.info(
-            "tts: limiting generated audio codebooks from %d to %d",
-            checkpoint_generated_codebooks,
-            n_q,
-        )
-        _limit_generated_codebooks(lm, n_q)
         if quantize_bits is not None:
-            logger.info(
-                "tts: quantizing depformer + attention/gating to %d bits",
-                quantize_bits,
-            )
+            logger.info("tts: quantizing depformer + attention/gating to %d bits", quantize_bits)
             nn.quantize(lm.depformer, bits=quantize_bits)
             for layer in lm.transformer.layers:
                 nn.quantize(layer.self_attn, bits=quantize_bits)
                 nn.quantize(layer.gating, bits=quantize_bits)
+
+        text_tokenizer = sentencepiece.SentencePieceProcessor(str(tokenizer_path))  # type: ignore[call-arg]
+
+        logger.info("tts: loading Mimi audio tokenizer from %s", mimi_weights)
+        generated_codebooks = lm_config.generated_codebooks
+        audio_tokenizer = models.mimi.Mimi(models.mimi_202407(generated_codebooks))
+        audio_tokenizer.load_pytorch_weights(str(mimi_weights), strict=True)
 
         tts_model = TTSModel(
             lm,
