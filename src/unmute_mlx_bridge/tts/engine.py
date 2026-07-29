@@ -162,6 +162,10 @@ class TtsSession:
     bundle: TtsModelBundle
     voice: str | Path | None
     max_gen_length: int
+    seed: int = 42
+    temperature: float = 0.8
+    top_k: int = 250
+    cfg_alpha: float | None = None
 
     state: object = field(init=False)
     lm_gen: LmGen = field(init=False)
@@ -184,6 +188,7 @@ class TtsSession:
         for cache_entry in tts_model.lm.depformer_cache:
             cache_entry.reset()
         tts_model.mimi.reset_all()
+        mx.random.seed(self.seed)
 
         if tts_model.multi_speaker:
             if isinstance(self.voice, Path):
@@ -195,8 +200,16 @@ class TtsSession:
             voices = [voice_path]
         else:
             voices = []
+        cfg_coef_conditioning = self.bundle.cfg_coef_conditioning
+        if self.cfg_alpha is not None:
+            if self.cfg_alpha not in tts_model.valid_cfg_conditionings:
+                raise ValueError(
+                    f"unsupported cfg_alpha {self.cfg_alpha}; expected one of "
+                    f"{sorted(tts_model.valid_cfg_conditionings)}"
+                )
+            cfg_coef_conditioning = self.cfg_alpha
         attributes = tts_model.make_condition_attributes(
-            voices, self.bundle.cfg_coef_conditioning
+            voices, cfg_coef_conditioning
         )
 
         self.state = tts_model.machine.new_state([])
@@ -248,8 +261,8 @@ class TtsSession:
         self.lm_gen = LmGen(
             tts_model.lm,
             max_steps=self.max_gen_length,
-            text_sampler=Sampler(temp=tts_model.temp),
-            audio_sampler=Sampler(temp=tts_model.temp),
+            text_sampler=Sampler(temp=self.temperature, top_k=self.top_k),
+            audio_sampler=Sampler(temp=self.temperature, top_k=self.top_k),
             on_text_hook=_on_text_hook,
             on_audio_hook=_on_audio_hook,
         )

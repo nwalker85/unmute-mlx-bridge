@@ -9,6 +9,7 @@ import asyncio
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 import msgpack
 import pytest
@@ -39,7 +40,15 @@ class FakeSession:
     bundle: object
     voice: str | None
     max_gen_length: int
+    seed: int = 42
+    temperature: float = 0.8
+    top_k: int = 250
+    cfg_alpha: float | None = None
     _step: int = field(default=0, init=False)
+    instances: ClassVar[list[FakeSession]] = []
+
+    def __post_init__(self):
+        self.instances.append(self)
 
     def stream_text(self, text: str, _cancelled=lambda: False):
         for word in text.split():
@@ -56,6 +65,7 @@ class FakeSession:
 
 @pytest.fixture
 async def tts_server():
+    FakeSession.instances.clear()
     config = TtsConfig(
         host="127.0.0.1",
         port=0,
@@ -216,6 +226,25 @@ async def test_text_produces_audio_then_text_event(tts_server):
         assert text2["text"] == "world"
 
 
+async def test_query_settings_are_forwarded_to_the_generation_session(tts_server):
+    _server, port = tts_server
+    query = (
+        "format=PcmMessagePack&seed=7&temperature=0.4&top_k=11"
+        "&cfg_alpha=1.5&max_seq_len=321"
+    )
+    async with await _connect(port, query=query) as ws:
+        await _recv_message(ws)  # Ready
+        await ws.send(msgpack.packb({"type": "Text", "text": "hello"}))
+        await _recv_message(ws)  # Audio
+
+    session = FakeSession.instances[-1]
+    assert session.seed == 7
+    assert session.temperature == 0.4
+    assert session.top_k == 11
+    assert session.cfg_alpha == 1.5
+    assert session.max_gen_length == 321
+
+
 async def test_audio_is_emitted_before_text_generation_finishes():
     release_generation = threading.Event()
 
@@ -224,6 +253,10 @@ async def test_audio_is_emitted_before_text_generation_finishes():
         bundle: object
         voice: str | None
         max_gen_length: int
+        seed: int = 42
+        temperature: float = 0.8
+        top_k: int = 250
+        cfg_alpha: float | None = None
 
         def stream_text(self, _text: str, _cancelled=lambda: False):
             yield TtsStepEvent(kind="audio", pcm=[0.1, 0.2, 0.3])
@@ -279,6 +312,10 @@ async def test_disconnect_cancels_generation_and_frees_the_slot():
         bundle: object
         voice: str | None
         max_gen_length: int
+        seed: int = 42
+        temperature: float = 0.8
+        top_k: int = 250
+        cfg_alpha: float | None = None
 
         def stream_text(self, _text: str, cancelled=lambda: False):
             yield TtsStepEvent(kind="audio", pcm=[0.1, 0.2, 0.3])
@@ -397,6 +434,10 @@ async def test_streamed_word_burst_does_not_block_keepalive_pong(
         bundle: object
         voice: str | None
         max_gen_length: int
+        seed: int = 42
+        temperature: float = 0.8
+        top_k: int = 250
+        cfg_alpha: float | None = None
 
         def stream_text(self, _text: str, _cancelled=lambda: False):
             time.sleep(1)

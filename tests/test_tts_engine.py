@@ -6,7 +6,99 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from unmute_mlx_bridge.tts import engine as tts_engine
+
+
+def _fake_session_bundle(cfg_calls):
+    tts_model = SimpleNamespace(
+        lm=SimpleNamespace(
+            transformer_cache=[],
+            depformer_cache=[],
+            condition_provider=object(),
+        ),
+        mimi=SimpleNamespace(reset_all=lambda: None),
+        multi_speaker=False,
+        valid_cfg_conditionings={1.0, 1.5},
+        machine=SimpleNamespace(
+            new_state=lambda _entries: SimpleNamespace(
+                entries=[], end_step=None, transcript=[]
+            )
+        ),
+        make_condition_attributes=lambda voices, cfg: (
+            cfg_calls.append((voices, cfg))
+            or SimpleNamespace(text={}, tensor={})
+        ),
+        temp=0.6,
+    )
+    return SimpleNamespace(tts_model=tts_model, cfg_coef_conditioning=1.0)
+
+
+def _install_fake_generation_modules(monkeypatch):
+    seeds: list[int] = []
+    sampler_args: list[tuple[float, int | None]] = []
+
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.random = SimpleNamespace(seed=seeds.append)
+
+    class FakeSampler:
+        def __init__(self, *, temp=0.8, top_k=None, **_kwargs):
+            sampler_args.append((temp, top_k))
+
+    class FakeLmGen:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    generate_module = types.ModuleType("moshi_mlx.models.generate")
+    generate_module.LmGen = FakeLmGen
+    conditioner_module = types.ModuleType("moshi_mlx.modules.conditioner")
+    conditioner_module.ConditionTensor = object
+    sampling_module = types.ModuleType("moshi_mlx.utils.sampling")
+    sampling_module.Sampler = FakeSampler
+
+    for name, module in {
+        "mlx.core": mlx_core,
+        "moshi_mlx.models.generate": generate_module,
+        "moshi_mlx.modules.conditioner": conditioner_module,
+        "moshi_mlx.utils.sampling": sampling_module,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return seeds, sampler_args
+
+
+def test_session_applies_seed_sampler_and_cfg_query_settings(monkeypatch):
+    seeds, sampler_args = _install_fake_generation_modules(monkeypatch)
+    cfg_calls = []
+
+    tts_engine.TtsSession(
+        bundle=_fake_session_bundle(cfg_calls),
+        voice=None,
+        max_gen_length=1000,
+        seed=7,
+        temperature=0.4,
+        top_k=11,
+        cfg_alpha=1.5,
+    )
+
+    assert seeds == [7]
+    assert sampler_args == [(0.4, 11), (0.4, 11)]
+    assert cfg_calls == [([], 1.5)]
+
+
+def test_session_rejects_unsupported_cfg_before_generation(monkeypatch):
+    _install_fake_generation_modules(monkeypatch)
+    cfg_calls = []
+
+    with pytest.raises(ValueError, match="unsupported cfg_alpha"):
+        tts_engine.TtsSession(
+            bundle=_fake_session_bundle(cfg_calls),
+            voice=None,
+            max_gen_length=1000,
+            cfg_alpha=1.25,
+        )
+
+    assert cfg_calls == []
 
 
 def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_path: Path):

@@ -246,7 +246,15 @@ class TtsServer:
             self._session_cls,
             bundle=self.bundle,
             voice=resolved_voice,
-            max_gen_length=self.config.max_gen_length,
+            max_gen_length=(
+                self.config.max_gen_length
+                if query.max_seq_len is None
+                else query.max_seq_len
+            ),
+            seed=query.seed,
+            temperature=query.temperature,
+            top_k=query.top_k,
+            cfg_alpha=query.cfg_alpha,
         )
 
         first_text_at: float | None = None
