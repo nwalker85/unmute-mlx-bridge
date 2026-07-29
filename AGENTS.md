@@ -22,7 +22,7 @@ remotes, deploy surfaces, or safety boundaries change.
 
 ### Verified Private-Incubation Enforcement State
 
-Verified on 2026-07-26:
+Verified through 2026-07-29:
 
 - `.github/workflows/ci.yml` passes local `actionlint` and `yamllint`
   validation.
@@ -30,17 +30,23 @@ Verified on 2026-07-26:
   `allowed_actions=all`, but workflow-triggered runs currently stop before job
   allocation as nameless `BuildFailed` / `startup_failure` runs with zero jobs.
   Those runs provide no remote test evidence.
-- Until the Norns ARC scale set is deployed and passes its first canary,
+- On 2026-07-29, the `norns-unmute-mlx-bridge` scale set registered
+  successfully and its listener authenticated to GitHub. Fresh PR events still
+  stopped as `BuildFailed` / `startup_failure` with zero jobs; the listener
+  received zero assigned jobs. The remaining blocker precedes runner
+  scheduling.
+- Until GitHub restores workflow-start capability for this private repository,
   locked local validation is the active private-incubation PR evidence gate:
   `uv sync --locked`, `git diff --check`, and
   `uv run --locked pytest -q`. Include `actionlint` and `yamllint` evidence
   when workflow files change.
 - GitHub's `CLEAN` merge state is mergeability metadata, not CI evidence. Do
   not report it as a passing check or substitute it for test results.
-- Remote CI execution remains pending ARC deployment and canary evidence.
-  Branch protection/ruleset enforcement remains pending external GitHub
-  account capability; current API attempts to inspect or configure it return
-  `403`.
+- The ARC release is deployed and ready but has no successful execution
+  evidence because GitHub never creates a job. Remote CI execution and branch
+  protection/ruleset enforcement remain pending external GitHub account
+  capability; current API attempts to inspect or configure branch policy
+  return `403`.
 
 ## Privacy and Data Boundaries
 
@@ -92,8 +98,9 @@ uv run --locked pytest -q
 ## Deploy Model
 
 - Intended remote CI: GitHub Actions (`.github/workflows/ci.yml`) on
-  `norns-unmute-mlx-bridge`; locked local validation remains the active
-  private-incubation PR evidence gate until the ARC canary passes
+  `norns-unmute-mlx-bridge`; the scale set is live, but locked local validation
+  remains the active private-incubation PR evidence gate while GitHub fails
+  before creating a job
 - Artifact: none until publication approved
 - Runtime host: local Apple Silicon (canary only)
 - Migration command: not applicable
