@@ -77,6 +77,7 @@ class TtsModelBundle:
         hf_repo: str,
         voice_repo: str = DEFAULT_DSM_TTS_VOICE_REPO,
         quantize_bits: int | None = None,
+        n_q: int = 24,
     ) -> TtsModelBundle:
         import mlx.core as mx
         import mlx.nn as nn
@@ -127,6 +128,7 @@ class TtsModelBundle:
             max_padding=8,
             initial_padding=2,
             final_padding=2,
+            n_q=n_q,
             padding_bonus=0.0,
             raw_config=raw_config,
         )

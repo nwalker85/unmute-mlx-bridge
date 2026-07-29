@@ -108,7 +108,10 @@ class TtsServer:
         self._session_lock = asyncio.Lock()
         self._bundle_loader = bundle_loader or (
             lambda: TtsModelBundle.load(
-                config.hf_repo, config.voice_repo, config.quantize_bits
+                config.hf_repo,
+                config.voice_repo,
+                config.quantize_bits,
+                n_q=config.n_q,
             )
         )
         self._session_cls = session_cls

@@ -78,6 +78,7 @@ class TtsConfig:
     max_gen_length: int
     authorized_ids: frozenset[str]
     log_level: str
+    n_q: int = 24
 
     @classmethod
     def from_env(cls) -> TtsConfig:
@@ -96,4 +97,5 @@ class TtsConfig:
                 x.strip() for x in authorized_ids.split(",") if x.strip()
             ),
             log_level=os.getenv("TTS_LOG_LEVEL", "INFO"),
+            n_q=_env_int("TTS_N_Q", 24),
         )

@@ -123,6 +123,7 @@ list and defaults):
 | `TTS_HOST`, `TTS_PORT` | TTS | Bind address, default `127.0.0.1:8089` |
 | `TTS_HF_REPO` | TTS | Default `kyutai/tts-1.6b-en_fr` |
 | `TTS_DEFAULT_VOICE` | TTS | Voice file used when the client doesn't pass `?voice=` |
+| `TTS_N_Q` | TTS | Generated audio codebooks, default `24` to match stock Unmute; lower values trade fidelity for speed |
 
 ### Talking to a running server manually
 

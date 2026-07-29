@@ -91,6 +91,34 @@ async def _recv_message(ws) -> dict:
     return msgpack.unpackb(raw)
 
 
+async def test_default_bundle_loader_forwards_configured_codebook_depth(monkeypatch):
+    observed_n_q = None
+
+    def load_bundle(_hf_repo, _voice_repo, _quantize_bits, n_q=None):
+        nonlocal observed_n_q
+        observed_n_q = n_q
+        return FakeBundle()
+
+    monkeypatch.setattr(tts_server_module.TtsModelBundle, "load", load_bundle)
+    config = TtsConfig(
+        host="127.0.0.1",
+        port=0,
+        hf_repo="unused",
+        voice_repo="unused",
+        default_voice="unused.wav",
+        quantize_bits=None,
+        max_gen_length=1000,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+        n_q=24,
+    )
+
+    server = TtsServer(config)
+    await server.load_model()
+
+    assert observed_n_q == 24
+
+
 async def test_connect_receives_ready(tts_server):
     _server, port = tts_server
     async with await _connect(port) as ws:
