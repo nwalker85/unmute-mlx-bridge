@@ -17,6 +17,8 @@ compatibility or version labels.
 - `docs/repo-intake.md` with lifecycle decisions.
 - `package-surface.json` recording GitHub-primary exception posture.
 - `.github/workflows/ci.yml` using GitHub Actions for portable CI.
+- Repo-scoped `norns-unmute-mlx-bridge` ARC runner configuration for portable
+  Linux/amd64 CI; Apple Silicon hardware tests remain opt-in.
 
 ## [0.1.0] — planned
 

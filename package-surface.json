@@ -9,11 +9,11 @@
   "release_trigger": "manually approved release only",
   "ci_gate": "uv sync --locked && uv run --locked pytest -q",
   "ci_lane": "github-actions",
-  "runner_label": "github-hosted:ubuntu-latest",
+  "runner_label": "norns-unmute-mlx-bridge",
   "nix_shell": "devShells.default",
   "nix_flake": "flake-check-required-before-publish",
   "semver_policy": "semver-v2",
   "owner": "Nate Walker",
   "publication_status": "private_incubation",
-  "_note": "GitHub is canonical. Intended remote CI is github-actions on github-hosted:ubuntu-latest, but private-incubation runs currently fail before job allocation (BuildFailed/startup_failure, zero jobs). Locked local validation is the active PR evidence gate; GitHub CLEAN is not CI evidence. Remote CI execution and branch protection/ruleset enforcement remain pending external account capability. Registry and artifact publication remain deferred until explicit approval."
+  "_note": "GitHub is canonical. Portable CI is configured for the repo-scoped Norns ARC label norns-unmute-mlx-bridge. Earlier private GitHub-hosted runs failed before job allocation (BuildFailed/startup_failure, zero jobs). Locked local validation remains the active PR evidence gate until the ARC canary passes; GitHub CLEAN is not CI evidence. Branch protection/ruleset enforcement remains pending external account capability. Registry and artifact publication remain deferred until explicit approval."
 }
