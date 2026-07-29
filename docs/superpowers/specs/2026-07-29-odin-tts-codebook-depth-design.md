@@ -1,5 +1,18 @@
 # Odin TTS Codebook Depth Design
 
+## Outcome
+
+Rejected by the physical canary on 2026-07-29. Limiting generation to 16
+codebooks improved controlled throughput from 0.77x at 24 codebooks to
+1.09-1.13x, but the resulting speech was unintelligible. Nate described it as
+"speaking in tongues."
+
+The omitted codebook tokens also condition later temporal-transformer steps.
+Supplying zeros for those streams therefore changes future generation rather
+than merely removing residual codec detail. The implementation was reverted
+and must not be restored without a model-supported partial-generation
+contract. Full 32-codebook generation remains the safe runtime behavior.
+
 ## Goal
 
 Make `TTS_N_Q` reduce the amount of delayed-stream TTS work performed on
