@@ -42,6 +42,18 @@ compatibility or version labels.
   MLX inference on Apple Silicon, real audio fixtures synthesized with macOS
   `say`, transcription/synthesis correctness and state-leak checks.
 
+### Fixed
+
+- `moshi-mlx`/`mlx` are marker-gated to `sys_platform == 'darwin' and
+  platform_machine == 'arm64'` in `pyproject.toml`, and every runtime import of
+  them in `stt/engine.py` / `tts/engine.py` is deferred into the function that
+  actually needs it (module-level imports removed). Without this, adding real
+  MLX inference would have broken `uv sync --locked` on the existing portable
+  `ubuntu-latest` CI lane entirely — `mlx`'s Linux wheel still requires the
+  macOS-only `mlx-metal` backend package, so it cannot resolve on Linux at all.
+  This matches the design spec's own requirement that MLX imports stay behind
+  explicit adapter construction so the portable suite runs on Linux CI.
+
 ### Known limitations
 
 - Single active session per process (documented, see `PROTOCOL.md`).

@@ -4,8 +4,16 @@ version = "0.1.0"
 description = "Apple Silicon MLX streaming STT/TTS servers compatible with the Kyutai Unmute model protocol"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-  "moshi-mlx>=0.2.6",
-  "mlx>=0.26",
+  # `mlx`/`moshi-mlx` publish wheels for Apple Silicon only (a partial Linux
+  # x86_64 `mlx` wheel exists but still pulls in the macOS-only `mlx-metal`
+  # backend package, so it cannot actually resolve on Linux). Marker-gating
+  # them here means `uv sync --locked` succeeds on portable Linux CI — the
+  # `src/unmute_mlx_bridge/{stt,tts}/engine.py` modules that import them defer
+  # those imports into function bodies for the same reason, so importing the
+  # rest of the package (protocol layer, both servers' session/HTTP logic)
+  # never requires MLX to be installed.
+  "moshi-mlx>=0.2.6; sys_platform == 'darwin' and platform_machine == 'arm64'",
+  "mlx>=0.26; sys_platform == 'darwin' and platform_machine == 'arm64'",
   "numpy>=2.0",
   "msgpack>=1.1",
   "pydantic>=2.9",

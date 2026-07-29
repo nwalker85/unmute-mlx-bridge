@@ -28,13 +28,23 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-import mlx.core as mx
-import mlx.nn as nn
 import sentencepiece
 from huggingface_hub import hf_hub_download
-from moshi_mlx import models
-from moshi_mlx.utils.sampling import Sampler
+
+# `mlx`/`moshi-mlx` only ship wheels for Apple Silicon (plus a partial, older-pinned
+# Linux x86_64 build that still requires the macOS-only `mlx-metal` backend package).
+# Importing them at module level would break `import unmute_mlx_bridge.stt.engine`
+# (and therefore `unmute_mlx_bridge.stt.server`, and therefore the portable
+# protocol/conformance test suite) on GitHub-hosted `ubuntu-latest` CI. Per the
+# design doc's own requirement ("MLX imports and model downloads remain behind
+# explicit adapter construction so the normal suite runs on GitHub-hosted Linux
+# CI"), the real imports are deferred into the functions that actually need them —
+# only reachable from `SttModelBundle.load()` and `SttSession`'s generation methods,
+# never from portable test collection or from constructing a fake bundle/session.
+if TYPE_CHECKING:
+    from moshi_mlx import models
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +87,10 @@ class SttModelBundle:
         quantize_bits: int | None = None,
         asr_delay_in_tokens: int | None = None,
     ) -> SttModelBundle:
+        import mlx.core as mx
+        import mlx.nn as nn
+        from moshi_mlx import models
+
         logger.info("stt: downloading config for %s", hf_repo)
         config_path = hf_hub_download(hf_repo, "config.json")
         with open(config_path) as fobj:
@@ -150,6 +164,9 @@ class SttSession:
     _pending_markers: list[tuple[int, int]] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
+        from moshi_mlx import models
+        from moshi_mlx.utils.sampling import Sampler
+
         self.bundle.mimi.reset_all()
         for cache_entry in self.bundle.lm.transformer_cache:
             cache_entry.reset()
@@ -182,6 +199,8 @@ class SttSession:
         return events
 
     def _step(self, frame: list[float]) -> list[SttStepEvent]:
+        import mlx.core as mx
+
         if self.gen.step_idx >= self.gen.max_steps:
             raise RuntimeError(
                 f"reached max_steps={self.gen.max_steps}; reconnect to start a fresh session"

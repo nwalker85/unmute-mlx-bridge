@@ -20,16 +20,24 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import mlx.core as mx
-import mlx.nn as nn
 import sentencepiece
-from moshi_mlx import models
-from moshi_mlx.models.generate import LmGen
-from moshi_mlx.models.tts import DEFAULT_DSM_TTS_VOICE_REPO, TTSModel
-from moshi_mlx.modules.conditioner import ConditionTensor
-from moshi_mlx.utils.loaders import hf_get
-from moshi_mlx.utils.sampling import Sampler
+
+# See the equivalent comment in `stt/engine.py`: `mlx`/`moshi-mlx` imports are
+# deferred out of module scope so this module (and therefore `tts/server.py` and
+# the portable conformance suite) stays importable on platforms without MLX.
+if TYPE_CHECKING:
+    import mlx.core as mx
+    from moshi_mlx.models.generate import LmGen
+    from moshi_mlx.models.tts import TTSModel
+    from moshi_mlx.modules.conditioner import ConditionTensor
+
+# `moshi_mlx.models.tts.DEFAULT_DSM_TTS_VOICE_REPO` — inlined as a literal because
+# it is used as a function *default argument value*, which Python evaluates at
+# module-import time (unlike a type annotation, which `from __future__ import
+# annotations` makes lazy). Its value: "kyutai/tts-voices".
+DEFAULT_DSM_TTS_VOICE_REPO = "kyutai/tts-voices"
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +67,12 @@ class TtsModelBundle:
         voice_repo: str = DEFAULT_DSM_TTS_VOICE_REPO,
         quantize_bits: int | None = None,
     ) -> TtsModelBundle:
+        import mlx.core as mx
+        import mlx.nn as nn
+        from moshi_mlx import models
+        from moshi_mlx.models.tts import TTSModel
+        from moshi_mlx.utils.loaders import hf_get
+
         logger.info("tts: downloading config for %s", hf_repo)
         raw_config_path = hf_get("config.json", hf_repo)
         with open(raw_config_path) as fobj:
@@ -146,6 +160,11 @@ class TtsSession:
     _emitted_transcript_len: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
+        import mlx.core as mx
+        from moshi_mlx.models.generate import LmGen
+        from moshi_mlx.modules.conditioner import ConditionTensor
+        from moshi_mlx.utils.sampling import Sampler
+
         tts_model = self.bundle.tts_model
         for cache_entry in tts_model.lm.transformer_cache:
             cache_entry.reset()
@@ -256,6 +275,8 @@ class TtsSession:
         return events
 
     def _step(self) -> list[TtsStepEvent]:
+        import mlx.core as mx
+
         if self.offset >= self.max_gen_length:
             raise RuntimeError(
                 f"reached max_gen_length={self.max_gen_length}; reconnect to start a fresh session"
