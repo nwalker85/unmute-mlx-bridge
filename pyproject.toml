@@ -48,6 +48,7 @@ asyncio_mode = "auto"
 markers = [
   "hardware: opt-in Apple Silicon hardware tests (requires real model weights, never run on portable CI)",
 ]
+addopts = ["-m", "not hardware"]
 
 [tool.ruff]
 line-length = 100
