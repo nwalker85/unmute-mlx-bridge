@@ -3,15 +3,29 @@ name = "unmute-mlx-bridge"
 version = "0.1.0"
 description = "Apple Silicon MLX streaming STT/TTS servers compatible with the Kyutai Unmute model protocol"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+  "moshi-mlx>=0.2.6",
+  "mlx>=0.26",
+  "numpy>=2.0",
+  "msgpack>=1.1",
+  "pydantic>=2.9",
+  "websockets>=13",
+  "prometheus-client>=0.21",
+  "sentencepiece>=0.2",
+  "huggingface_hub>=0.25",
+  "sphn>=0.1.4",
+]
 
 [dependency-groups]
 dev = [
   "pytest",
+  "pytest-asyncio>=0.24",
 ]
 
 [project.scripts]
 unmute-mlx-bridge = "unmute_mlx_bridge:main"
+unmute-mlx-stt = "unmute_mlx_bridge.stt.server:run"
+unmute-mlx-tts = "unmute_mlx_bridge.tts.server:run"
 
 [build-system]
 requires = ["hatchling"]
@@ -22,6 +36,14 @@ packages = ["src/unmute_mlx_bridge"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 markers = [
   "hardware: opt-in Apple Silicon hardware tests (requires real model weights, never run on portable CI)",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
