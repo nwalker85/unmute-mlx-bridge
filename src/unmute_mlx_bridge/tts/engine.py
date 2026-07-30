@@ -175,6 +175,7 @@ class TtsSession:
     _pending_frames: list[mx.array] = field(default_factory=list, init=False)
     _pending_word: tuple[str, int] | None = field(default=None, init=False)
     _emitted_transcript_len: int = field(default=0, init=False)
+    _first_text_chunk: bool = field(default=True, init=False)
 
     def __post_init__(self) -> None:
         import mlx.core as mx
@@ -269,8 +270,19 @@ class TtsSession:
         """Tokenize `text` into word `Entry`s and run generation steps until the
         state machine needs another word (mirrors `TTSGen.process()`).
         """
+        from moshi_mlx.models.tts import script_to_entries
+
         tts_model = self.bundle.tts_model
-        entries = tts_model.prepare_script([text], padding_between=1)
+        entries = script_to_entries(
+            tts_model.tokenizer,
+            tts_model.machine.token_ids,
+            tts_model.mimi.frame_rate,
+            [text],
+            multi_speaker=self._first_text_chunk and tts_model.multi_speaker,
+            padding_between=1,
+        )
+        if entries:
+            self._first_text_chunk = False
         self.state.entries.extend(entries)
         while len(self.state.entries) > tts_model.machine.second_stream_ahead:
             if cancelled is not None and cancelled():

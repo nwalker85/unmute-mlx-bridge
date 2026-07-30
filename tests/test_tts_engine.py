@@ -131,6 +131,48 @@ def test_text_hook_unpacks_batched_tokens_before_state_machine(monkeypatch):
     assert text_tokens.tolist() == [[3]]
 
 
+def test_stream_text_injects_speaker_marker_only_for_first_chunk(monkeypatch):
+    tts_module = types.ModuleType("moshi_mlx.models.tts")
+
+    def script_to_entries(
+        _tokenizer,
+        _token_ids,
+        _frame_rate,
+        script,
+        *,
+        multi_speaker,
+        padding_between,
+    ):
+        assert padding_between == 1
+        tokens = [1, len(script[0])] if multi_speaker else [len(script[0])]
+        return [SimpleNamespace(tokens=tokens, text=script[0])]
+
+    tts_module.script_to_entries = script_to_entries
+    monkeypatch.setitem(sys.modules, "moshi_mlx.models.tts", tts_module)
+
+    tts_model = SimpleNamespace(
+        tokenizer=object(),
+        machine=SimpleNamespace(
+            token_ids=object(),
+            second_stream_ahead=100,
+        ),
+        mimi=SimpleNamespace(frame_rate=12.5),
+        multi_speaker=True,
+        prepare_script=lambda script, padding_between: [
+            SimpleNamespace(tokens=[1, len(script[0])], text=script[0])
+        ],
+    )
+    session = object.__new__(tts_engine.TtsSession)
+    session.bundle = SimpleNamespace(tts_model=tts_model)
+    session.state = SimpleNamespace(entries=[])
+    session._first_text_chunk = True
+
+    list(session.stream_text("one"))
+    list(session.stream_text("two"))
+
+    assert [entry.tokens for entry in session.state.entries] == [[1, 3], [3]]
+
+
 def test_step_does_not_decode_frames_containing_zero_tokens(monkeypatch):
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.int64 = np.int64
