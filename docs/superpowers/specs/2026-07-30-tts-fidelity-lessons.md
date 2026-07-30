@@ -1,7 +1,7 @@
 # Odin TTS fidelity lessons
 
 Date: 2026-07-30  
-Status: physically verified findings; final word-stream regression still in flight  
+Status: final word-stream fidelity physically verified; performance experiments ongoing
 Scope: `unmute-mlx-bridge` on Odin, Kyutai `tts-1.6b-en_fr`, stock Unmute
 
 ## What “slow” meant
@@ -39,6 +39,16 @@ Therefore:
   quality.
 - Test future quantization levels against an untouched upstream generator and
   a physical listening canary before deploying them.
+
+Full-model 8-bit quantization passed intelligibility, cadence, identity,
+determinism, and clipping checks. Two identical word-stream runs produced 44
+frames / 3.52 seconds, zero clipping, identical PCM, and warmed throughput of
+0.594x versus the observed 0.374x unquantized run. It nevertheless failed tonal
+parity: Nate heard an EQ-like reduction in low- and mid-frequency richness.
+
+Therefore full-model q8 is also rejected as the deployed setting. Fidelity
+includes timbre and spectral body, not just intelligibility. Odin was restored
+to unquantized q32 after this canary.
 
 ### 2. Reducing generated codebooks violates the autoregressive contract
 
@@ -104,6 +114,8 @@ Nate physically verified the 3.52-second sample as perfect.
    optimization variable at a time.
 7. Treat repository tests, deployed SHA, raw-waveform behavior, realtime
    browser behavior, and physical mic/speaker results as separate proof gates.
+8. Include tonal richness in the physical gate; clean but spectrally thinned
+   speech is a quality regression.
 
 Fenrir is not part of this TTS optimization lane. It remains the dedicated
 shared Qwen reasoning/tool-calling inference node.
@@ -117,4 +129,3 @@ The bridge test suite must prove:
 - only the first text chunk in a session injects a speaker-turn marker;
 - query seed, temperature, top-k, CFG conditioning, and maximum sequence length
   reach the session explicitly.
-
