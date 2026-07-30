@@ -439,6 +439,180 @@ async def test_buffered_turn_emits_nothing_until_generation_completes():
     ]
 
 
+async def test_buffered_generation_failure_emits_only_sanitized_error():
+    @dataclass
+    class FailingSession:
+        bundle: object
+        voice: str | None
+        max_gen_length: int
+        seed: int = 42
+        temperature: float = 0.8
+        top_k: int = 250
+        cfg_alpha: float | None = None
+
+        def stream_text(self, _text: str, _cancelled=lambda: False):
+            yield TtsStepEvent(kind="audio", pcm=[0.1, 0.2, 0.3])
+            raise RuntimeError("private model failure detail")
+
+        def stream_eos(self, _cancelled=lambda: False):
+            return iter(())
+
+    async with _running_tts_server(
+        delivery_mode="buffered_turn",
+        session_cls=FailingSession,
+    ) as (server, port):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Text", "text": "hello"}))
+            await ws.send(msgpack.packb({"type": "Eos"}))
+            error = await _recv_message(ws)
+            assert error == {
+                "type": "Error",
+                "message": "buffered TTS generation failed",
+            }
+            with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                await asyncio.wait_for(ws.recv(), timeout=0.2)
+
+    assert server.metrics.output_audio_seconds._value.get() == 0
+    assert (
+        server.metrics.buffered_turn_failures.labels(
+            reason="generation"
+        )._value.get()
+        == 1
+    )
+
+
+async def test_buffered_audio_limit_discards_the_complete_partial_turn():
+    async with _running_tts_server(
+        delivery_mode="buffered_turn",
+        max_buffered_audio_seconds=2 / 24_000,
+    ) as (server, port):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Text", "text": "hello"}))
+            await ws.send(msgpack.packb({"type": "Eos"}))
+            error = await _recv_message(ws)
+            assert error == {
+                "type": "Error",
+                "message": "buffered TTS output exceeds configured limit",
+            }
+            with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                await asyncio.wait_for(ws.recv(), timeout=0.2)
+
+    assert server.metrics.output_audio_seconds._value.get() == 0
+    assert (
+        server.metrics.buffered_turn_failures.labels(
+            reason="output_limit"
+        )._value.get()
+        == 1
+    )
+
+
+async def test_buffered_input_limit_rejects_before_retaining_extra_text():
+    FakeSession.instances.clear()
+    async with _running_tts_server(
+        delivery_mode="buffered_turn",
+        max_buffered_chars=5,
+    ) as (server, port):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Text", "text": "hello"}))
+            await ws.send(msgpack.packb({"type": "Text", "text": "!"}))
+            error = await _recv_message(ws)
+            assert error == {
+                "type": "Error",
+                "message": "buffered TTS input exceeds configured limit",
+            }
+            with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                await asyncio.wait_for(ws.recv(), timeout=0.2)
+
+    assert FakeSession.instances[-1].text_inputs == []
+    assert (
+        server.metrics.buffered_turn_failures.labels(
+            reason="input_limit"
+        )._value.get()
+        == 1
+    )
+
+
+async def test_buffered_disconnect_before_eos_discards_text_and_frees_slot():
+    FakeSession.instances.clear()
+    async with _running_tts_server(delivery_mode="buffered_turn") as (
+        server,
+        port,
+    ):
+        first = await _connect(port)
+        assert await _recv_message(first) == {"type": "Ready"}
+        await first.send(msgpack.packb({"type": "Text", "text": "discard me"}))
+        await first.close()
+        async with asyncio.timeout(0.5):
+            while server.health.session_active:
+                await asyncio.sleep(0)
+        async with await _connect(port) as second:
+            assert await _recv_message(second) == {"type": "Ready"}
+
+    assert FakeSession.instances[0].text_inputs == []
+
+
+async def test_buffered_disconnect_during_generation_cancels_and_frees_slot():
+    generation_started = threading.Event()
+    generation_stopped = threading.Event()
+    force_release = threading.Event()
+
+    @dataclass
+    class CancellableBufferedSession:
+        bundle: object
+        voice: str | None
+        max_gen_length: int
+        seed: int = 42
+        temperature: float = 0.8
+        top_k: int = 250
+        cfg_alpha: float | None = None
+
+        def stream_text(self, _text: str, cancelled=lambda: False):
+            generation_started.set()
+            yield TtsStepEvent(kind="audio", pcm=[0.1, 0.2, 0.3])
+            while not cancelled() and not force_release.is_set():
+                time.sleep(0.01)
+            generation_stopped.set()
+
+        def stream_eos(self, _cancelled=lambda: False):
+            return iter(())
+
+    async with _running_tts_server(
+        delivery_mode="buffered_turn",
+        session_cls=CancellableBufferedSession,
+    ) as (server, port):
+        try:
+            first = await _connect(port)
+            assert await _recv_message(first) == {"type": "Ready"}
+            await first.send(
+                msgpack.packb({"type": "Text", "text": "hello"})
+            )
+            await first.send(msgpack.packb({"type": "Eos"}))
+            assert await asyncio.to_thread(generation_started.wait, 0.5)
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(_recv_message(first), timeout=0.05)
+
+            await first.close()
+            assert await asyncio.to_thread(generation_stopped.wait, 0.5)
+
+            async with await _connect(port) as second:
+                assert await _recv_message(second) == {"type": "Ready"}
+                await second.send(msgpack.packb({"type": "Eos"}))
+                with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                    await asyncio.wait_for(second.recv(), timeout=0.2)
+        finally:
+            force_release.set()
+
+    assert (
+        server.metrics.buffered_turn_failures.labels(
+            reason="disconnect"
+        )._value.get()
+        == 1
+    )
+
+
 async def test_disconnect_cancels_generation_and_frees_the_slot():
     generation_started = threading.Event()
     generation_stopped = threading.Event()

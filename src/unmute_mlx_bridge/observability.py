@@ -122,6 +122,11 @@ class Metrics:
     output_audio_seconds: Counter = field(init=False)
     time_to_first_output_seconds: Histogram = field(init=False)
     inference_step_seconds: Histogram = field(init=False)
+    buffered_input_characters: Histogram = field(init=False)
+    buffered_audio_seconds: Histogram = field(init=False)
+    buffered_synthesis_seconds: Histogram = field(init=False)
+    buffered_eos_to_first_emit_seconds: Histogram = field(init=False)
+    buffered_turn_failures: Counter = field(init=False)
 
     def __post_init__(self) -> None:
         self.model_load_seconds = Gauge(
@@ -161,6 +166,32 @@ class Metrics:
         self.inference_step_seconds = Histogram(
             "bridge_inference_step_seconds",
             "Wall time of a single model step",
+            registry=self.registry,
+        )
+        self.buffered_input_characters = Histogram(
+            "bridge_tts_buffered_input_characters",
+            "Characters retained for one buffered TTS turn",
+            registry=self.registry,
+        )
+        self.buffered_audio_seconds = Histogram(
+            "bridge_tts_buffered_audio_seconds",
+            "Audio seconds retained for one buffered TTS turn",
+            registry=self.registry,
+        )
+        self.buffered_synthesis_seconds = Histogram(
+            "bridge_tts_buffered_synthesis_seconds",
+            "Wall time from EOS to complete buffered TTS synthesis",
+            registry=self.registry,
+        )
+        self.buffered_eos_to_first_emit_seconds = Histogram(
+            "bridge_tts_buffered_eos_to_first_emit_seconds",
+            "Wall time from EOS to first buffered TTS emission",
+            registry=self.registry,
+        )
+        self.buffered_turn_failures = Counter(
+            "bridge_tts_buffered_turn_failures_total",
+            "Buffered TTS turn failures by reason",
+            labelnames=("reason",),
             registry=self.registry,
         )
 

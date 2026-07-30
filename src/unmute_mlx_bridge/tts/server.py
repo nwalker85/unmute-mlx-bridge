@@ -47,6 +47,10 @@ class _ClientDisconnected(Exception):
     """Internal signal used when a close races with a blocking generation step."""
 
 
+class _BufferedAudioLimitExceeded(Exception):
+    """Internal signal that buffered PCM exceeded its configured bound."""
+
+
 def _next_event(events: Iterator[TtsStepEvent]) -> TtsStepEvent | None:
     return next(events, None)
 
@@ -270,92 +274,117 @@ class TtsServer:
         first_output_sent = False
         buffered_chunks: list[str] = []
         buffered_chars = 0
+        buffered_terminal_handled = False
 
-        async for raw in connection:
-            if isinstance(raw, (bytes, bytearray)) and bytes(raw) == b"\x00":
-                first_output_sent = await self._finish_session(
-                    connection,
-                    session,
-                    buffered_chunks,
-                    first_text_at,
-                    first_output_sent,
-                )
-                await connection.close()
-                return
-            if not isinstance(raw, (bytes, bytearray)):
-                continue
-            try:
-                data = unpack_message(raw)
-                message = TtsClientMessageAdapter.validate_python(data)
-            except Exception as exc:
-                self.metrics.protocol_errors.inc()
-                await connection.send(
-                    pack_message(TtsErrorMessage(message=f"malformed frame: {exc}"))
-                )
-                continue
-
-            if isinstance(message, TtsVoiceMessage):
-                # Custom cloned-voice embeddings are a documented non-goal for this
-                # canary; reject explicitly rather than silently ignoring them.
-                self.metrics.protocol_errors.inc()
-                await connection.send(
-                    pack_message(
-                        TtsErrorMessage(
-                            message="custom voice embeddings (Voice message) are not supported"
+        try:
+            async for raw in connection:
+                if isinstance(raw, (bytes, bytearray)) and bytes(raw) == b"\x00":
+                    buffered_terminal_handled = True
+                    first_output_sent = await self._finish_session(
+                        connection,
+                        session,
+                        buffered_chunks,
+                        first_text_at,
+                        first_output_sent,
+                    )
+                    await connection.close()
+                    return
+                if not isinstance(raw, (bytes, bytearray)):
+                    continue
+                try:
+                    data = unpack_message(raw)
+                    message = TtsClientMessageAdapter.validate_python(data)
+                except Exception as exc:
+                    self.metrics.protocol_errors.inc()
+                    await connection.send(
+                        pack_message(
+                            TtsErrorMessage(message=f"malformed frame: {exc}")
                         )
                     )
-                )
-                continue
-            if isinstance(message, TtsTextMessage):
-                if not message.text:
                     continue
-                if first_text_at is None:
-                    first_text_at = time.monotonic()
-                if self.config.delivery_mode == "buffered_turn":
-                    next_chars = buffered_chars + len(message.text)
-                    if next_chars > self.config.max_buffered_chars:
-                        await connection.send(
-                            pack_message(
-                                TtsErrorMessage(
-                                    message=(
-                                        "buffered TTS input exceeds configured limit"
-                                    )
+
+                if isinstance(message, TtsVoiceMessage):
+                    # Custom cloned-voice embeddings are a documented non-goal for
+                    # this canary; reject explicitly rather than silently ignoring
+                    # them.
+                    self.metrics.protocol_errors.inc()
+                    await connection.send(
+                        pack_message(
+                            TtsErrorMessage(
+                                message=(
+                                    "custom voice embeddings (Voice message) "
+                                    "are not supported"
                                 )
                             )
                         )
-                        await connection.close()
-                        return
-                    buffered_chunks.append(message.text)
-                    buffered_chars = next_chars
+                    )
                     continue
-                cancelled = threading.Event()
-                first_output_sent = await self._emit_stream(
-                    connection,
-                    session.stream_text(message.text, cancelled.is_set),
-                    first_text_at,
-                    first_output_sent,
-                    cancelled,
-                )
-            elif isinstance(message, TtsEosMessage):
-                first_output_sent = await self._finish_session(
-                    connection,
-                    session,
-                    buffered_chunks,
-                    first_text_at,
-                    first_output_sent,
-                )
-                await connection.close()
-                return
+                if isinstance(message, TtsTextMessage):
+                    if not message.text:
+                        continue
+                    if first_text_at is None:
+                        first_text_at = time.monotonic()
+                    if self.config.delivery_mode == "buffered_turn":
+                        next_chars = buffered_chars + len(message.text)
+                        if next_chars > self.config.max_buffered_chars:
+                            buffered_terminal_handled = True
+                            self.metrics.buffered_turn_failures.labels(
+                                reason="input_limit"
+                            ).inc()
+                            await connection.send(
+                                pack_message(
+                                    TtsErrorMessage(
+                                        message=(
+                                            "buffered TTS input exceeds "
+                                            "configured limit"
+                                        )
+                                    )
+                                )
+                            )
+                            await connection.close()
+                            return
+                        buffered_chunks.append(message.text)
+                        buffered_chars = next_chars
+                        continue
+                    cancelled = threading.Event()
+                    first_output_sent = await self._emit_stream(
+                        connection,
+                        session.stream_text(message.text, cancelled.is_set),
+                        first_text_at,
+                        first_output_sent,
+                        cancelled,
+                    )
+                elif isinstance(message, TtsEosMessage):
+                    buffered_terminal_handled = True
+                    first_output_sent = await self._finish_session(
+                        connection,
+                        session,
+                        buffered_chunks,
+                        first_text_at,
+                        first_output_sent,
+                    )
+                    await connection.close()
+                    return
+        finally:
+            if (
+                self.config.delivery_mode == "buffered_turn"
+                and not buffered_terminal_handled
+            ):
+                self.metrics.buffered_turn_failures.labels(
+                    reason="disconnect"
+                ).inc()
 
     async def _collect_stream(
         self,
         connection: ServerConnection,
         events: Iterator[TtsStepEvent],
         cancelled: threading.Event,
-    ) -> list[TtsStepEvent]:
+        max_audio_samples: int,
+    ) -> tuple[list[TtsStepEvent], int]:
         connection_closed = asyncio.create_task(connection.wait_closed())
         next_event: asyncio.Task[TtsStepEvent | None] | None = None
         collected: list[TtsStepEvent] = []
+        audio_samples = 0
         try:
             while True:
                 next_event = asyncio.create_task(
@@ -374,7 +403,11 @@ class TtsServer:
                     raise _ClientDisconnected
                 event = next_event.result()
                 if event is None:
-                    return collected
+                    return collected, audio_samples
+                if event.kind == "audio":
+                    audio_samples += len(event.pcm or [])
+                    if audio_samples > max_audio_samples:
+                        raise _BufferedAudioLimitExceeded
                 collected.append(event)
         finally:
             cancelled.set()
@@ -413,15 +446,64 @@ class TtsServer:
             )
         if not buffered_chunks:
             return first_output_sent
+        eos_started_at = time.monotonic()
+        max_audio_samples = int(
+            self.config.max_buffered_audio_seconds * 24_000
+        )
         events = _buffered_turn_events(
             session,
             "".join(buffered_chunks),
             cancelled.is_set,
         )
-        collected = await self._collect_stream(
-            connection,
-            events,
-            cancelled,
+        try:
+            collected, audio_samples = await self._collect_stream(
+                connection,
+                events,
+                cancelled,
+                max_audio_samples,
+            )
+        except _BufferedAudioLimitExceeded:
+            self.metrics.buffered_turn_failures.labels(
+                reason="output_limit"
+            ).inc()
+            await connection.send(
+                pack_message(
+                    TtsErrorMessage(
+                        message="buffered TTS output exceeds configured limit"
+                    )
+                )
+            )
+            return first_output_sent
+        except _ClientDisconnected:
+            self.metrics.buffered_turn_failures.labels(
+                reason="disconnect"
+            ).inc()
+            raise
+        except Exception:
+            self.metrics.buffered_turn_failures.labels(
+                reason="generation"
+            ).inc()
+            logger.exception("tts: buffered turn generation failed")
+            await connection.send(
+                pack_message(
+                    TtsErrorMessage(
+                        message="buffered TTS generation failed"
+                    )
+                )
+            )
+            return first_output_sent
+        synthesis_seconds = time.monotonic() - eos_started_at
+        self.metrics.buffered_input_characters.observe(
+            len("".join(buffered_chunks))
+        )
+        self.metrics.buffered_audio_seconds.observe(
+            audio_samples / 24_000
+        )
+        self.metrics.buffered_synthesis_seconds.observe(
+            synthesis_seconds
+        )
+        self.metrics.buffered_eos_to_first_emit_seconds.observe(
+            time.monotonic() - eos_started_at
         )
         return await self._emit(
             connection,

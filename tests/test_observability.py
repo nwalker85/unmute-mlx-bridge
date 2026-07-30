@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from prometheus_client import generate_latest
 from websockets.datastructures import Headers
 from websockets.http11 import Request
 
@@ -35,3 +36,23 @@ async def test_build_info_matches_moshi_server_http_contract():
         "cargo_target_triple",
     }
     assert build_info["git_describe"].startswith("unmute-mlx-bridge ")
+
+
+def test_buffered_tts_metrics_have_stable_names_and_failure_labels():
+    metrics = Metrics()
+    metrics.buffered_input_characters.observe(11)
+    metrics.buffered_audio_seconds.observe(1.5)
+    metrics.buffered_synthesis_seconds.observe(2.5)
+    metrics.buffered_eos_to_first_emit_seconds.observe(2.6)
+    metrics.buffered_turn_failures.labels(reason="generation").inc()
+
+    payload = generate_latest(metrics.registry).decode()
+
+    assert "bridge_tts_buffered_input_characters_count 1.0" in payload
+    assert "bridge_tts_buffered_audio_seconds_count 1.0" in payload
+    assert "bridge_tts_buffered_synthesis_seconds_count 1.0" in payload
+    assert "bridge_tts_buffered_eos_to_first_emit_seconds_count 1.0" in payload
+    assert (
+        'bridge_tts_buffered_turn_failures_total{reason="generation"} 1.0'
+        in payload
+    )
