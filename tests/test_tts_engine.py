@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from unmute_mlx_bridge.tts import engine as tts_engine
@@ -99,6 +100,41 @@ def test_session_rejects_unsupported_cfg_before_generation(monkeypatch):
         )
 
     assert cfg_calls == []
+
+
+def test_step_does_not_decode_frames_containing_zero_tokens(monkeypatch):
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.int64 = np.int64
+    mlx_core.ones = np.ones
+    mlx_core.clip = np.clip
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+    decode_calls = []
+    tts_model = SimpleNamespace(
+        lm=SimpleNamespace(n_q=2, dep_q=2),
+        machine=SimpleNamespace(token_ids=SimpleNamespace(zero=-1)),
+        mimi=SimpleNamespace(
+            decode_step=lambda frame: (
+                decode_calls.append(frame) or np.zeros((1, 1, 1920))
+            )
+        ),
+    )
+    session = object.__new__(tts_engine.TtsSession)
+    session.bundle = SimpleNamespace(tts_model=tts_model)
+    session.max_gen_length = 100
+    session.state = SimpleNamespace(transcript=[])
+    session.lm_gen = SimpleNamespace(
+        step=lambda *_args, **_kwargs: None,
+        last_audio_tokens=lambda: np.array([[-1, 7]], dtype=np.int64),
+    )
+    session.offset = 0
+    session._emitted_transcript_len = 0
+    session._pending_word = None
+
+    events = session._step()
+
+    assert events == []
+    assert decode_calls == []
 
 
 def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_path: Path):

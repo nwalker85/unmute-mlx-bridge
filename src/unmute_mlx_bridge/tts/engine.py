@@ -344,7 +344,9 @@ class TtsSession:
                 )
             self._pending_word = (word, step)
 
-        if frame is not None:
+        if frame is not None and not (
+            frame == tts_model.machine.token_ids.zero
+        ).any():
             pcm = tts_model.mimi.decode_step(frame[:, :, None])
             pcm = mx.clip(pcm[0, 0], -1, 1)
             events.append(TtsStepEvent(kind="audio", pcm=pcm.tolist()))
