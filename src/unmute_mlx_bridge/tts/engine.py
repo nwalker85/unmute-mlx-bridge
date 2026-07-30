@@ -232,24 +232,17 @@ class TtsSession:
         self._cross_attention_src = cross_attention_src
 
         def _on_text_hook(text_tokens: mx.array) -> None:
-            # NOTE: `text_tokens` has shape (batch, 1), so `token` here is a
-            # single-element list, not a scalar. `StateMachine.process`'s `token
-            # not in [new_word, pad]` clamp therefore always fires, and
-            # `new_word` is driven by the padding countdown rather than the
-            # model spontaneously sampling `token_ids.new_word`. Verified this
-            # is not an adaptation bug: the *exact same* pattern (no `token[0]`
-            # unpacking) is used both by the upstream reference streaming script
-            # (`tts_mlx_streaming.py::TTSGen._on_text_hook`) and by real
-            # `moshi-server`'s own production Python TTS glue
-            # (`rust/moshi-server/tts.py::TTSService._on_text_hook`) — only the
-            # *batch* `TTSModel.generate()` path unpacks `token[0]`, a different
-            # call site with a different shape convention.
+            # moshi-mlx 0.3.0 added batching, so each item has shape (1,) here.
+            # StateMachine.process expects the scalar token, matching the
+            # package's batch TTS implementation.
             tokens = text_tokens.tolist()
             out_tokens = []
             for token in tokens:
-                out_token, _consumed = tts_model.machine.process(self.offset, self.state, token)
+                out_token, _consumed = tts_model.machine.process(
+                    self.offset, self.state, token[0]
+                )
                 out_tokens.append(out_token)
-            text_tokens[:] = mx.array(out_tokens, dtype=mx.int64)
+            text_tokens[:] = mx.array(out_tokens, dtype=mx.int64)[:, None]
 
         def _on_audio_hook(audio_tokens: mx.array) -> None:
             delays = tts_model.lm.delays

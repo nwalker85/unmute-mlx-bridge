@@ -39,17 +39,20 @@ def _fake_session_bundle(cfg_calls):
 def _install_fake_generation_modules(monkeypatch):
     seeds: list[int] = []
     sampler_args: list[tuple[float, int | None]] = []
+    lm_gen_kwargs: list[dict[str, object]] = []
 
     mlx_core = types.ModuleType("mlx.core")
     mlx_core.random = SimpleNamespace(seed=seeds.append)
+    mlx_core.array = np.array
+    mlx_core.int64 = np.int64
 
     class FakeSampler:
         def __init__(self, *, temp=0.8, top_k=None, **_kwargs):
             sampler_args.append((temp, top_k))
 
     class FakeLmGen:
-        def __init__(self, *_args, **_kwargs):
-            pass
+        def __init__(self, *_args, **kwargs):
+            lm_gen_kwargs.append(kwargs)
 
     generate_module = types.ModuleType("moshi_mlx.models.generate")
     generate_module.LmGen = FakeLmGen
@@ -65,11 +68,11 @@ def _install_fake_generation_modules(monkeypatch):
         "moshi_mlx.utils.sampling": sampling_module,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
-    return seeds, sampler_args
+    return seeds, sampler_args, lm_gen_kwargs
 
 
 def test_session_applies_seed_sampler_and_cfg_query_settings(monkeypatch):
-    seeds, sampler_args = _install_fake_generation_modules(monkeypatch)
+    seeds, sampler_args, _lm_gen_kwargs = _install_fake_generation_modules(monkeypatch)
     cfg_calls = []
 
     tts_engine.TtsSession(
@@ -100,6 +103,32 @@ def test_session_rejects_unsupported_cfg_before_generation(monkeypatch):
         )
 
     assert cfg_calls == []
+
+
+def test_text_hook_unpacks_batched_tokens_before_state_machine(monkeypatch):
+    _seeds, _sampler_args, lm_gen_kwargs = _install_fake_generation_modules(
+        monkeypatch
+    )
+    cfg_calls = []
+    bundle = _fake_session_bundle(cfg_calls)
+    processed_tokens = []
+
+    def process(_offset, _state, token):
+        processed_tokens.append(token)
+        return 3, False
+
+    bundle.tts_model.machine.process = process
+    tts_engine.TtsSession(
+        bundle=bundle,
+        voice=None,
+        max_gen_length=1000,
+    )
+    text_tokens = np.array([[0]], dtype=np.int64)
+
+    lm_gen_kwargs[0]["on_text_hook"](text_tokens)
+
+    assert processed_tokens == [0]
+    assert text_tokens.tolist() == [[3]]
 
 
 def test_step_does_not_decode_frames_containing_zero_tokens(monkeypatch):
