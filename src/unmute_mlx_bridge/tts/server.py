@@ -325,7 +325,12 @@ class TtsServer:
                     if first_text_at is None:
                         first_text_at = time.monotonic()
                     if self.config.delivery_mode == "buffered_turn":
-                        next_chars = buffered_chars + len(message.text)
+                        text = message.text.strip()
+                        if not text:
+                            continue
+                        next_chars = (
+                            buffered_chars + len(text) + (1 if buffered_chunks else 0)
+                        )
                         if next_chars > self.config.max_buffered_chars:
                             buffered_terminal_handled = True
                             self.metrics.buffered_turn_failures.labels(
@@ -343,7 +348,7 @@ class TtsServer:
                             )
                             await connection.close()
                             return
-                        buffered_chunks.append(message.text)
+                        buffered_chunks.append(text)
                         buffered_chars = next_chars
                         continue
                     cancelled = threading.Event()
@@ -446,13 +451,14 @@ class TtsServer:
             )
         if not buffered_chunks:
             return first_output_sent
+        buffered_text = " ".join(buffered_chunks)
         eos_started_at = time.monotonic()
         max_audio_samples = int(
             self.config.max_buffered_audio_seconds * 24_000
         )
         events = _buffered_turn_events(
             session,
-            "".join(buffered_chunks),
+            buffered_text,
             cancelled.is_set,
         )
         try:
@@ -494,7 +500,7 @@ class TtsServer:
             return first_output_sent
         synthesis_seconds = time.monotonic() - eos_started_at
         self.metrics.buffered_input_characters.observe(
-            len("".join(buffered_chunks))
+            len(buffered_text)
         )
         self.metrics.buffered_audio_seconds.observe(
             audio_samples / 24_000

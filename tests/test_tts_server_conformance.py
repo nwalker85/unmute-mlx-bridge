@@ -372,6 +372,25 @@ async def test_buffered_turn_waits_for_eos_and_preserves_event_order(eos_frame):
     ]
 
 
+async def test_buffered_turn_preserves_boundaries_between_stock_word_chunks():
+    FakeSession.instances.clear()
+    async with _running_tts_server(delivery_mode="buffered_turn") as (
+        _server,
+        port,
+    ):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Text", "text": "hello"}))
+            await ws.send(msgpack.packb({"type": "Text", "text": "world"}))
+            await ws.send(msgpack.packb({"type": "Eos"}))
+            messages = await _recv_until_closed(ws)
+
+    assert FakeSession.instances[-1].text_inputs == ["hello world"]
+    assert [
+        message["text"] for message in messages if message["type"] == "Text"
+    ] == ["hello", "world"]
+
+
 async def test_buffered_empty_turn_closes_without_generation():
     FakeSession.instances.clear()
     async with _running_tts_server(delivery_mode="buffered_turn") as (
