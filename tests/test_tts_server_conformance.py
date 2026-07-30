@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -45,12 +46,14 @@ class FakeSession:
     top_k: int = 250
     cfg_alpha: float | None = None
     _step: int = field(default=0, init=False)
+    text_inputs: list[str] = field(default_factory=list, init=False)
     instances: ClassVar[list[FakeSession]] = []
 
     def __post_init__(self):
         self.instances.append(self)
 
     def stream_text(self, text: str, _cancelled=lambda: False):
+        self.text_inputs.append(text)
         for word in text.split():
             self._step += 1
             yield TtsStepEvent(kind="audio", pcm=[0.1, 0.2, 0.3])
@@ -63,9 +66,14 @@ class FakeSession:
         yield TtsStepEvent(kind="audio", pcm=[0.0, 0.0])
 
 
-@pytest.fixture
-async def tts_server():
-    FakeSession.instances.clear()
+@asynccontextmanager
+async def _running_tts_server(
+    *,
+    delivery_mode="streaming",
+    session_cls=FakeSession,
+    max_buffered_chars=4096,
+    max_buffered_audio_seconds=60.0,
+):
     config = TtsConfig(
         host="127.0.0.1",
         port=0,
@@ -76,8 +84,15 @@ async def tts_server():
         max_gen_length=1000,
         authorized_ids=frozenset({"public_token"}),
         log_level="INFO",
+        delivery_mode=delivery_mode,
+        max_buffered_chars=max_buffered_chars,
+        max_buffered_audio_seconds=max_buffered_audio_seconds,
     )
-    server = TtsServer(config, bundle_loader=lambda: FakeBundle(), session_cls=FakeSession)
+    server = TtsServer(
+        config,
+        bundle_loader=lambda: FakeBundle(),
+        session_cls=session_cls,
+    )
     await server.load_model()
     process_request = build_process_request(
         server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids
@@ -87,6 +102,13 @@ async def tts_server():
     ) as ws_server:
         port = ws_server.sockets[0].getsockname()[1]
         yield server, port
+
+
+@pytest.fixture
+async def tts_server():
+    FakeSession.instances.clear()
+    async with _running_tts_server() as running:
+        yield running
 
 
 async def _connect(port: int, query: str = "format=PcmMessagePack"):
@@ -99,6 +121,15 @@ async def _connect(port: int, query: str = "format=PcmMessagePack"):
 async def _recv_message(ws) -> dict:
     raw = await ws.recv(decode=False)
     return msgpack.unpackb(raw)
+
+
+async def _recv_until_closed(ws) -> list[dict]:
+    messages: list[dict] = []
+    try:
+        while True:
+            messages.append(await _recv_message(ws))
+    except websockets.exceptions.ConnectionClosedOK:
+        return messages
 
 
 async def test_default_bundle_loader_forwards_configured_codebook_depth(monkeypatch):
@@ -300,6 +331,112 @@ async def test_audio_is_emitted_before_text_generation_finishes():
             assert first["type"] == "Audio"
             second = await _recv_message(ws)
             assert second["type"] == "Text"
+
+
+@pytest.mark.parametrize(
+    "eos_frame",
+    [
+        msgpack.packb({"type": "Eos"}),
+        b"\x00",
+    ],
+)
+async def test_buffered_turn_waits_for_eos_and_preserves_event_order(eos_frame):
+    FakeSession.instances.clear()
+    async with _running_tts_server(delivery_mode="buffered_turn") as (
+        _server,
+        port,
+    ):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Text", "text": "hello "}))
+            await ws.send(msgpack.packb({"type": "Text", "text": "world"}))
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(_recv_message(ws), timeout=0.05)
+
+            await ws.send(eos_frame)
+            messages = await _recv_until_closed(ws)
+
+    assert FakeSession.instances[-1].text_inputs == ["hello world"]
+    assert [message["type"] for message in messages] == [
+        "Audio",
+        "Text",
+        "Audio",
+        "Text",
+        "Audio",
+    ]
+    assert [
+        message["text"] for message in messages if message["type"] == "Text"
+    ] == [
+        "hello",
+        "world",
+    ]
+
+
+async def test_buffered_empty_turn_closes_without_generation():
+    FakeSession.instances.clear()
+    async with _running_tts_server(delivery_mode="buffered_turn") as (
+        _server,
+        port,
+    ):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Eos"}))
+            with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                await asyncio.wait_for(ws.recv(), timeout=0.2)
+
+    assert FakeSession.instances[-1].text_inputs == []
+
+
+async def test_buffered_turn_emits_nothing_until_generation_completes():
+    generation_started = threading.Event()
+    release_generation = threading.Event()
+
+    @dataclass
+    class BlockingBufferedSession:
+        bundle: object
+        voice: str | None
+        max_gen_length: int
+        seed: int = 42
+        temperature: float = 0.8
+        top_k: int = 250
+        cfg_alpha: float | None = None
+
+        def stream_text(self, _text: str, _cancelled=lambda: False):
+            generation_started.set()
+            yield TtsStepEvent(kind="audio", pcm=[0.1, 0.2, 0.3])
+            if not release_generation.wait(timeout=2):
+                raise RuntimeError("test did not release generation")
+            yield TtsStepEvent(
+                kind="word",
+                text="hello",
+                start_s=0.0,
+                stop_s=1.0,
+            )
+
+        def stream_eos(self, _cancelled=lambda: False):
+            yield TtsStepEvent(kind="audio", pcm=[0.0, 0.0])
+
+    async with _running_tts_server(
+        delivery_mode="buffered_turn",
+        session_cls=BlockingBufferedSession,
+    ) as (_server, port):
+        async with await _connect(port) as ws:
+            assert await _recv_message(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Text", "text": "hello"}))
+            await ws.send(msgpack.packb({"type": "Eos"}))
+            assert await asyncio.to_thread(generation_started.wait, 0.5)
+            try:
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(_recv_message(ws), timeout=0.05)
+            finally:
+                release_generation.set()
+            messages = await _recv_until_closed(ws)
+
+    assert [message["type"] for message in messages] == [
+        "Audio",
+        "Text",
+        "Audio",
+    ]
 
 
 async def test_disconnect_cancels_generation_and_frees_the_slot():

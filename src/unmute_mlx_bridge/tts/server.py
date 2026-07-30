@@ -51,6 +51,15 @@ def _next_event(events: Iterator[TtsStepEvent]) -> TtsStepEvent | None:
     return next(events, None)
 
 
+def _buffered_turn_events(
+    session: TtsSession,
+    text: str,
+    cancelled: Callable[[], bool],
+) -> Iterator[TtsStepEvent]:
+    yield from session.stream_text(text, cancelled)
+    yield from session.stream_eos(cancelled)
+
+
 def _consume_background_voice_result(task: asyncio.Task[object]) -> None:
     """Consume an abandoned resolver result so its exception is never orphaned."""
     try:
@@ -259,16 +268,17 @@ class TtsServer:
 
         first_text_at: float | None = None
         first_output_sent = False
+        buffered_chunks: list[str] = []
+        buffered_chars = 0
 
         async for raw in connection:
             if isinstance(raw, (bytes, bytearray)) and bytes(raw) == b"\x00":
-                cancelled = threading.Event()
-                first_output_sent = await self._emit_stream(
+                first_output_sent = await self._finish_session(
                     connection,
-                    session.stream_eos(cancelled.is_set),
+                    session,
+                    buffered_chunks,
                     first_text_at,
                     first_output_sent,
-                    cancelled,
                 )
                 await connection.close()
                 return
@@ -301,6 +311,23 @@ class TtsServer:
                     continue
                 if first_text_at is None:
                     first_text_at = time.monotonic()
+                if self.config.delivery_mode == "buffered_turn":
+                    next_chars = buffered_chars + len(message.text)
+                    if next_chars > self.config.max_buffered_chars:
+                        await connection.send(
+                            pack_message(
+                                TtsErrorMessage(
+                                    message=(
+                                        "buffered TTS input exceeds configured limit"
+                                    )
+                                )
+                            )
+                        )
+                        await connection.close()
+                        return
+                    buffered_chunks.append(message.text)
+                    buffered_chars = next_chars
+                    continue
                 cancelled = threading.Event()
                 first_output_sent = await self._emit_stream(
                     connection,
@@ -310,16 +337,98 @@ class TtsServer:
                     cancelled,
                 )
             elif isinstance(message, TtsEosMessage):
-                cancelled = threading.Event()
-                first_output_sent = await self._emit_stream(
+                first_output_sent = await self._finish_session(
                     connection,
-                    session.stream_eos(cancelled.is_set),
+                    session,
+                    buffered_chunks,
                     first_text_at,
                     first_output_sent,
-                    cancelled,
                 )
                 await connection.close()
                 return
+
+    async def _collect_stream(
+        self,
+        connection: ServerConnection,
+        events: Iterator[TtsStepEvent],
+        cancelled: threading.Event,
+    ) -> list[TtsStepEvent]:
+        connection_closed = asyncio.create_task(connection.wait_closed())
+        next_event: asyncio.Task[TtsStepEvent | None] | None = None
+        collected: list[TtsStepEvent] = []
+        try:
+            while True:
+                next_event = asyncio.create_task(
+                    asyncio.to_thread(_next_event, events)
+                )
+                done, _pending = await asyncio.wait(
+                    (next_event, connection_closed),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if connection_closed in done:
+                    cancelled.set()
+                    try:
+                        await next_event
+                    except Exception:
+                        pass
+                    raise _ClientDisconnected
+                event = next_event.result()
+                if event is None:
+                    return collected
+                collected.append(event)
+        finally:
+            cancelled.set()
+            connection_closed.cancel()
+            try:
+                await connection_closed
+            except asyncio.CancelledError:
+                pass
+            if next_event is not None and not next_event.done():
+                try:
+                    await asyncio.shield(next_event)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+            close_events = getattr(events, "close", None)
+            if close_events is not None:
+                close_events()
+
+    async def _finish_session(
+        self,
+        connection: ServerConnection,
+        session: TtsSession,
+        buffered_chunks: list[str],
+        first_text_at: float | None,
+        first_output_sent: bool,
+    ) -> bool:
+        cancelled = threading.Event()
+        if self.config.delivery_mode == "streaming":
+            return await self._emit_stream(
+                connection,
+                session.stream_eos(cancelled.is_set),
+                first_text_at,
+                first_output_sent,
+                cancelled,
+            )
+        if not buffered_chunks:
+            return first_output_sent
+        events = _buffered_turn_events(
+            session,
+            "".join(buffered_chunks),
+            cancelled.is_set,
+        )
+        collected = await self._collect_stream(
+            connection,
+            events,
+            cancelled,
+        )
+        return await self._emit(
+            connection,
+            collected,
+            first_text_at,
+            first_output_sent,
+        )
 
     async def _emit_stream(
         self,
