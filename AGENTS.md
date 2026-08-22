@@ -130,6 +130,11 @@ Changing repository visibility from private to public requires:
    templates, and release notes.
 7. Final visibility diff and explicit approval from Nate.
 
+See `docs/repo-intake.md` → "Publication Export Plan" for the decided export
+mechanism (fresh squashed history for the public repo; full private history
+stays Forgejo-only) and the current list of files excluded from the public
+export.
+
 ## Agent Workspace
 
 Use `.agents/` for operational handoffs:

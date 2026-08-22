@@ -2,12 +2,22 @@
 
 ## Reporting Vulnerabilities
 
-This repository is in **private incubation**. GitHub private vulnerability
-reporting must be enabled before publication; it is not yet active.
+**Please report security issues privately, not as a public issue.**
 
-During private incubation, security reports should be sent through an
-established private channel directly to the repository owner. Do not open
-public issues for security vulnerabilities.
+Use GitHub's private vulnerability reporting: go to the **Security** tab →
+**Report a vulnerability**. That opens a private advisory visible only to
+maintainers.
+
+Please include: what you found, how to reproduce it, the version or commit, and
+what an attacker could do with it. You'll get an acknowledgement; this is a
+small project maintained in spare time, so please allow reasonable time for a
+fix before public disclosure.
+
+> **Maintainer note — must be done before or at publication:** private
+> vulnerability reporting is **opt-in** and is not enabled by default. Enable it
+> at **Settings → Advanced Security → Private vulnerability reporting**. Until
+> that toggle is on, the Security tab offers reporters no private channel and
+> the instructions above do not work.
 
 ## Sensitive Data
 

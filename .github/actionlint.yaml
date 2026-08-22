@@ -1,4 +1,6 @@
 ---
+# .github/workflows/ci.yml uses ubuntu-latest (GitHub-hosted); no self-hosted
+# runner labels are declared. Add an entry here if a self-hosted runner is
+# registered for this repo after publication cutover.
 self-hosted-runner:
-  labels:
-    - norns-unmute-mlx-bridge
+  labels: []

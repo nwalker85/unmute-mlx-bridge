@@ -38,6 +38,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import platform
 import re
 import socket
@@ -520,7 +521,7 @@ class ClockMetadata:
 
 def log_clock_metadata(
     logger: logging.Logger | None = None,
-    ntp_source: str = "gps.ravenmask.net",
+    ntp_source: str | None = None,
     resolve_ntp: bool = True,
 ) -> ClockMetadata:
     """Log startup UTC time, monotonic reference, and expected NTP source.
@@ -529,6 +530,11 @@ def log_clock_metadata(
     When ``resolve_ntp`` is True, performs a DNS-only hostname resolution check
     (``getaddrinfo``) to verify the NTP source is reachable in DNS.
 
+    ``ntp_source`` defaults to the ``NTP_SOURCE`` environment variable, falling
+    back to the public ``pool.ntp.org`` NTP pool if unset. Deployments with a
+    specific NTP source (e.g. a local stratum-1 or GPS-disciplined server) should
+    set ``NTP_SOURCE`` rather than relying on the default.
+
     IMPORTANT: a successful DNS resolution does NOT prove the system clock is
     synchronized.  The log event includes ``ntp_sync_note`` explicitly stating
     this.  Synchronization must be verified via ``chronyc tracking`` or
@@ -536,6 +542,8 @@ def log_clock_metadata(
     """
     if logger is None:
         logger = logging.getLogger(__name__)
+    if ntp_source is None:
+        ntp_source = os.getenv("NTP_SOURCE", "pool.ntp.org")
 
     utc_now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     mono_ref = time.monotonic()

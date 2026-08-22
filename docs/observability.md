@@ -208,19 +208,20 @@ Thresholds (`_TTS_QUEUE_HIGH_WATER = 30`, `_TTS_QUEUE_LOW_WATER = 5`,
 
 ---
 
-## GPS Clock Verification
+## NTP Clock Verification
 
 Both bridge servers call `log_clock_metadata()` at startup. This records:
 
 - `utc_startup`: UTC wall-clock time (ISO 8601) for cross-service event correlation.
 - `monotonic_start_ref`: monotonic epoch for within-process duration calculations.
-- `ntp_hostname_dns_resolved`: whether `gps.ravenmask.net` resolved in DNS at startup.
+- `ntp_hostname_dns_resolved`: whether the configured NTP source resolved in DNS
+  at startup.
 - `ntp_sync_note`: explicit reminder that DNS resolution ≠ NTP synchronization.
 
 **DNS resolution is not NTP synchronization.** A `true` value for
 `ntp_hostname_dns_resolved` only means the hostname was reachable in DNS; it does
-not mean the system clock is disciplined to GPS. Synchronization status must be
-verified externally:
+not mean the system clock is disciplined to that source. Synchronization status
+must be verified externally:
 
 ```bash
 # On the host running the bridge container:
@@ -229,5 +230,7 @@ chronyc tracking
 timedatectl show
 ```
 
-The expected NTP source is `gps.ravenmask.net`. This is recorded for operator
-reference; the bridge never modifies system NTP configuration.
+The expected NTP source defaults to the public `pool.ntp.org` pool and is
+configurable via the `NTP_SOURCE` environment variable — set it to your own
+stratum-1 or GPS-disciplined server if you have one. This is recorded for
+operator reference; the bridge never modifies system NTP configuration.

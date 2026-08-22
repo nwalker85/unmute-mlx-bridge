@@ -41,8 +41,10 @@ compatibility or version labels.
 - Opt-in hardware test suite (`tests/hardware/`, `pytest -m hardware`): real
   MLX inference on Apple Silicon, real audio fixtures synthesized with macOS
   `say`, transcription/synthesis correctness and state-leak checks.
-- Repo-scoped `norns-unmute-mlx-bridge` ARC runner configuration for portable
-  Linux/amd64 CI; Apple Silicon hardware tests remain opt-in.
+- Repo-scoped self-hosted ARC runner configuration for portable Linux/amd64 CI;
+  Apple Silicon hardware tests remain opt-in. `.github/workflows/ci.yml` now
+  targets a GitHub-hosted runner (`ubuntu-latest`) by default; see
+  `docs/repo-intake.md` for the current CI lane decision.
 
 ### Fixed
 

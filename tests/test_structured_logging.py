@@ -228,7 +228,7 @@ def test_log_clock_metadata_returns_clock_metadata():
     assert isinstance(meta, ClockMetadata)
     assert meta.utc_startup.endswith("+00:00") or meta.utc_startup.endswith("Z")
     assert meta.monotonic_start_ref > 0
-    assert meta.expected_ntp_source == "gps.ravenmask.net"
+    assert meta.expected_ntp_source == "pool.ntp.org"
     assert meta.ntp_hostname_dns_resolved is None  # resolve_ntp=False
     assert meta.sync_verified_externally is None
 
@@ -280,6 +280,18 @@ def test_monotonic_reference_is_positive():
     assert meta.monotonic_start_ref > 0
     later = time.monotonic()
     assert later >= meta.monotonic_start_ref
+
+
+def test_log_clock_metadata_ntp_source_from_env(monkeypatch):
+    monkeypatch.setenv("NTP_SOURCE", "ntp.example.internal")
+    meta = log_clock_metadata(resolve_ntp=False)
+    assert meta.expected_ntp_source == "ntp.example.internal"
+
+
+def test_log_clock_metadata_explicit_arg_overrides_env(monkeypatch):
+    monkeypatch.setenv("NTP_SOURCE", "ntp.example.internal")
+    meta = log_clock_metadata(resolve_ntp=False, ntp_source="explicit.example.org")
+    assert meta.expected_ntp_source == "explicit.example.org"
 
 
 # ---------------------------------------------------------------------------

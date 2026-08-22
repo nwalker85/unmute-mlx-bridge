@@ -1,0 +1,10 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Kyutai Unmute (upstream)
+    url: https://github.com/kyutai-labs/unmute/issues
+    about: >
+      Issues with Unmute itself — the frontend, LLM turn logic, VAD, or session
+      handling — belong upstream. This project is only the two MLX model servers.
+  - name: Security vulnerability
+    url: https://github.com/nwalker85/unmute-mlx-bridge/security/policy
+    about: Please report security issues privately, not as a public issue.

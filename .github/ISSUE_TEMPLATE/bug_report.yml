@@ -1,0 +1,85 @@
+name: Bug report
+description: Something in unmute-mlx-bridge is broken or behaving unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: if speech sounds halting or stutters, check the
+        [Performance envelope](../blob/main/README.md#performance-envelope)
+        first — TTS generates below real time on some Apple Silicon, and
+        `TTS_DELIVERY_MODE=buffered_turn` is the intended fix.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Started `uv run unmute-mlx-tts` with ...
+        2. Connected with ...
+        3. Observed ...
+    validations:
+      required: true
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Mac model and chip
+      placeholder: "Mac Mini M4 Pro, 48 GB"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.5"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: unmute-mlx-bridge version or commit
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >
+        Any STT_* / TTS_* environment variables you set. Redact tokens.
+      render: shell
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Structured output helps most — set `STT_LOG_FORMAT=json` /
+        `TTS_LOG_FORMAT=json`. **Redact hostnames, tokens, and any transcript
+        text you don't want public** before pasting.
+      render: shell
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Checks
+      options:
+        - label: I removed secrets, private hostnames, and personal transcript text from everything pasted above
+          required: true

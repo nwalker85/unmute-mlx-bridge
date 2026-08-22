@@ -1,0 +1,74 @@
+name: Performance report
+description: Share real-time-factor numbers from your hardware
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The README's numbers come from a single reference host. Reports from
+        other Apple Silicon are genuinely useful — they're the only way this
+        project learns where the real-time boundary actually sits.
+
+        Please run the hardware tests and paste what they print:
+
+        ```
+        uv run --locked pytest -m hardware -q -s
+        ```
+
+  - type: input
+    id: hardware
+    attributes:
+      label: Mac model, chip, and memory
+      placeholder: "MacBook Pro M3 Max, 64 GB"
+    validations:
+      required: true
+
+  - type: input
+    id: stt-rtf
+    attributes:
+      label: STT real_time_factor
+    validations:
+      required: true
+
+  - type: input
+    id: tts-rtf
+    attributes:
+      label: TTS real_time_factor
+    validations:
+      required: true
+
+  - type: dropdown
+    id: quantization
+    attributes:
+      label: TTS_QUANTIZE_BITS
+      options:
+        - unset (unquantized)
+        - "8"
+        - other (describe below)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: delivery
+    attributes:
+      label: TTS_DELIVERY_MODE
+      options:
+        - streaming
+        - buffered_turn
+    validations:
+      required: true
+
+  - type: textarea
+    id: subjective
+    attributes:
+      label: How did it actually sound?
+      description: >
+        Continuous or stuttering? Intelligible? Stable voice identity? This
+        matters as much as the numbers — a good real-time factor with bad
+        audio is not a good result.
+
+  - type: textarea
+    id: raw
+    attributes:
+      label: Raw test output
+      render: shell
