@@ -12,6 +12,7 @@ from typing import Literal, cast
 
 
 TtsDeliveryMode = Literal["streaming", "buffered_turn"]
+LogFormat = Literal["json", "text"]
 
 
 def _env_int(name: str, default: int) -> int:
@@ -48,6 +49,23 @@ class SttConfig:
     (falls back to 6, matching the real `kyutai/stt-1b-en_fr-candle` `stt.toml`)."""
     authorized_ids: frozenset[str]
     log_level: str
+    log_format: LogFormat = "text"
+    max_recv_queue: int = 1024
+    """Maximum WebSocket receive queue depth (messages). Bounds backlog of audio frames."""
+    max_input_frame_samples: int = 48_000
+    """Maximum samples in a single Audio message. Frames exceeding this are rejected."""
+    log_transcripts: bool = False
+    """Gate full transcript text in structured logs.
+
+    Default ``False`` (safe for general use). Set ``STT_LOG_TRANSCRIPTS=true``
+    only for the private canary where Nate explicitly approved full transcript
+    logging.
+
+    **Sampled once at process startup** (via :meth:`from_env`).  Changing the
+    environment variable after the process starts has no effect; a process
+    restart is required.  This is intentionally different from the Unmute client
+    ``UNMUTE_LOG_TRANSCRIPTS`` flag, which is evaluated at each session start.
+    """
 
     @classmethod
     def from_env(cls) -> SttConfig:
@@ -63,6 +81,10 @@ class SttConfig:
                 x.strip() for x in authorized_ids.split(",") if x.strip()
             ),
             log_level=os.getenv("STT_LOG_LEVEL", "INFO"),
+            log_format=cast(LogFormat, os.getenv("STT_LOG_FORMAT", "text")),
+            max_recv_queue=_env_int("STT_MAX_RECV_QUEUE", 1024),
+            max_input_frame_samples=_env_int("STT_MAX_INPUT_FRAME_SAMPLES", 48_000),
+            log_transcripts=os.getenv("STT_LOG_TRANSCRIPTS", "").lower() in ("1", "true", "yes"),
         )
 
 
@@ -82,10 +104,23 @@ class TtsConfig:
     max_gen_length: int
     authorized_ids: frozenset[str]
     log_level: str
+    log_format: LogFormat = "text"
     n_q: int = 24
     delivery_mode: TtsDeliveryMode = "streaming"
     max_buffered_chars: int = 4096
     max_buffered_audio_seconds: float = 60.0
+    log_transcripts: bool = False
+    """Gate full TTS text in structured logs.
+
+    Default ``False`` (safe for general use). Set ``TTS_LOG_TRANSCRIPTS=true``
+    only for the private canary where Nate explicitly approved full transcript
+    logging.
+
+    **Sampled once at process startup** (via :meth:`from_env`).  Changing the
+    environment variable after the process starts has no effect; a process
+    restart is required.  This is intentionally different from the Unmute client
+    ``UNMUTE_LOG_TRANSCRIPTS`` flag, which is evaluated at each session start.
+    """
 
     @classmethod
     def from_env(cls) -> TtsConfig:
@@ -119,8 +154,10 @@ class TtsConfig:
                 x.strip() for x in authorized_ids.split(",") if x.strip()
             ),
             log_level=os.getenv("TTS_LOG_LEVEL", "INFO"),
+            log_format=cast(LogFormat, os.getenv("TTS_LOG_FORMAT", "text")),
             n_q=_env_int("TTS_N_Q", 24),
             delivery_mode=cast(TtsDeliveryMode, delivery_mode),
             max_buffered_chars=max_buffered_chars,
             max_buffered_audio_seconds=max_buffered_audio_seconds,
+            log_transcripts=os.getenv("TTS_LOG_TRANSCRIPTS", "").lower() in ("1", "true", "yes"),
         )
