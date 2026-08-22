@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Literal, cast
+
+
+TtsDeliveryMode = Literal["streaming", "buffered_turn"]
 
 
 def _env_int(name: str, default: int) -> int:
@@ -78,10 +82,29 @@ class TtsConfig:
     max_gen_length: int
     authorized_ids: frozenset[str]
     log_level: str
+    n_q: int = 24
+    delivery_mode: TtsDeliveryMode = "streaming"
+    max_buffered_chars: int = 4096
+    max_buffered_audio_seconds: float = 60.0
 
     @classmethod
     def from_env(cls) -> TtsConfig:
         authorized_ids = os.getenv("TTS_AUTHORIZED_IDS", "public_token")
+        delivery_mode = os.getenv("TTS_DELIVERY_MODE", "streaming")
+        if delivery_mode not in ("streaming", "buffered_turn"):
+            raise ValueError(
+                "TTS_DELIVERY_MODE must be 'streaming' or 'buffered_turn'"
+            )
+        max_buffered_chars = _env_int("TTS_MAX_BUFFERED_CHARS", 4096)
+        if max_buffered_chars <= 0:
+            raise ValueError("TTS_MAX_BUFFERED_CHARS must be positive")
+        max_buffered_audio_seconds = _env_float(
+            "TTS_MAX_BUFFERED_AUDIO_SECONDS", 60.0
+        )
+        if max_buffered_audio_seconds <= 0:
+            raise ValueError(
+                "TTS_MAX_BUFFERED_AUDIO_SECONDS must be positive"
+            )
         return cls(
             host=os.getenv("TTS_HOST", "127.0.0.1"),
             port=_env_int("TTS_PORT", 8089),
@@ -96,4 +119,8 @@ class TtsConfig:
                 x.strip() for x in authorized_ids.split(",") if x.strip()
             ),
             log_level=os.getenv("TTS_LOG_LEVEL", "INFO"),
+            n_q=_env_int("TTS_N_Q", 24),
+            delivery_mode=cast(TtsDeliveryMode, delivery_mode),
+            max_buffered_chars=max_buffered_chars,
+            max_buffered_audio_seconds=max_buffered_audio_seconds,
         )

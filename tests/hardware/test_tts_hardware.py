@@ -30,6 +30,10 @@ def _rms(pcm: list[float]) -> float:
     return math.sqrt(sum(x * x for x in pcm) / len(pcm))
 
 
+def test_uses_stock_unmute_codebook_depth(tts_bundle):
+    assert tts_bundle.tts_model.n_q == 24
+
+
 def test_synthesizes_non_silent_audio_with_word_timing(tts_bundle, tmp_path: Path):
     session = TtsSession(bundle=tts_bundle, voice=None, max_gen_length=4096)
 

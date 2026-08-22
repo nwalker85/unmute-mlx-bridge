@@ -47,8 +47,21 @@ class _ClientDisconnected(Exception):
     """Internal signal used when a close races with a blocking generation step."""
 
 
+class _BufferedAudioLimitExceeded(Exception):
+    """Internal signal that buffered PCM exceeded its configured bound."""
+
+
 def _next_event(events: Iterator[TtsStepEvent]) -> TtsStepEvent | None:
     return next(events, None)
+
+
+def _buffered_turn_events(
+    session: TtsSession,
+    text: str,
+    cancelled: Callable[[], bool],
+) -> Iterator[TtsStepEvent]:
+    yield from session.stream_text(text, cancelled)
+    yield from session.stream_eos(cancelled)
 
 
 def _consume_background_voice_result(task: asyncio.Task[object]) -> None:
@@ -108,7 +121,10 @@ class TtsServer:
         self._session_lock = asyncio.Lock()
         self._bundle_loader = bundle_loader or (
             lambda: TtsModelBundle.load(
-                config.hf_repo, config.voice_repo, config.quantize_bits
+                config.hf_repo,
+                config.voice_repo,
+                config.quantize_bits,
+                n_q=config.n_q,
             )
         )
         self._session_cls = session_cls
@@ -243,72 +259,264 @@ class TtsServer:
             self._session_cls,
             bundle=self.bundle,
             voice=resolved_voice,
-            max_gen_length=self.config.max_gen_length,
+            max_gen_length=(
+                self.config.max_gen_length
+                if query.max_seq_len is None
+                else query.max_seq_len
+            ),
+            seed=query.seed,
+            temperature=query.temperature,
+            top_k=query.top_k,
+            cfg_alpha=query.cfg_alpha,
         )
 
         first_text_at: float | None = None
         first_output_sent = False
+        buffered_chunks: list[str] = []
+        buffered_chars = 0
+        buffered_terminal_handled = False
 
-        async for raw in connection:
-            if isinstance(raw, (bytes, bytearray)) and bytes(raw) == b"\x00":
-                cancelled = threading.Event()
-                first_output_sent = await self._emit_stream(
-                    connection,
-                    session.stream_eos(cancelled.is_set),
-                    first_text_at,
-                    first_output_sent,
-                    cancelled,
-                )
-                await connection.close()
-                return
-            if not isinstance(raw, (bytes, bytearray)):
-                continue
-            try:
-                data = unpack_message(raw)
-                message = TtsClientMessageAdapter.validate_python(data)
-            except Exception as exc:
-                self.metrics.protocol_errors.inc()
-                await connection.send(
-                    pack_message(TtsErrorMessage(message=f"malformed frame: {exc}"))
-                )
-                continue
-
-            if isinstance(message, TtsVoiceMessage):
-                # Custom cloned-voice embeddings are a documented non-goal for this
-                # canary; reject explicitly rather than silently ignoring them.
-                self.metrics.protocol_errors.inc()
-                await connection.send(
-                    pack_message(
-                        TtsErrorMessage(
-                            message="custom voice embeddings (Voice message) are not supported"
+        try:
+            async for raw in connection:
+                if isinstance(raw, (bytes, bytearray)) and bytes(raw) == b"\x00":
+                    buffered_terminal_handled = True
+                    first_output_sent = await self._finish_session(
+                        connection,
+                        session,
+                        buffered_chunks,
+                        first_text_at,
+                        first_output_sent,
+                    )
+                    await connection.close()
+                    return
+                if not isinstance(raw, (bytes, bytearray)):
+                    continue
+                try:
+                    data = unpack_message(raw)
+                    message = TtsClientMessageAdapter.validate_python(data)
+                except Exception as exc:
+                    self.metrics.protocol_errors.inc()
+                    await connection.send(
+                        pack_message(
+                            TtsErrorMessage(message=f"malformed frame: {exc}")
                         )
                     )
-                )
-                continue
-            if isinstance(message, TtsTextMessage):
-                if not message.text:
                     continue
-                if first_text_at is None:
-                    first_text_at = time.monotonic()
-                cancelled = threading.Event()
-                first_output_sent = await self._emit_stream(
-                    connection,
-                    session.stream_text(message.text, cancelled.is_set),
-                    first_text_at,
-                    first_output_sent,
-                    cancelled,
+
+                if isinstance(message, TtsVoiceMessage):
+                    # Custom cloned-voice embeddings are a documented non-goal for
+                    # this canary; reject explicitly rather than silently ignoring
+                    # them.
+                    self.metrics.protocol_errors.inc()
+                    await connection.send(
+                        pack_message(
+                            TtsErrorMessage(
+                                message=(
+                                    "custom voice embeddings (Voice message) "
+                                    "are not supported"
+                                )
+                            )
+                        )
+                    )
+                    continue
+                if isinstance(message, TtsTextMessage):
+                    if not message.text:
+                        continue
+                    if first_text_at is None:
+                        first_text_at = time.monotonic()
+                    if self.config.delivery_mode == "buffered_turn":
+                        text = message.text.strip()
+                        if not text:
+                            continue
+                        next_chars = (
+                            buffered_chars + len(text) + (1 if buffered_chunks else 0)
+                        )
+                        if next_chars > self.config.max_buffered_chars:
+                            buffered_terminal_handled = True
+                            self.metrics.buffered_turn_failures.labels(
+                                reason="input_limit"
+                            ).inc()
+                            await connection.send(
+                                pack_message(
+                                    TtsErrorMessage(
+                                        message=(
+                                            "buffered TTS input exceeds "
+                                            "configured limit"
+                                        )
+                                    )
+                                )
+                            )
+                            await connection.close()
+                            return
+                        buffered_chunks.append(text)
+                        buffered_chars = next_chars
+                        continue
+                    cancelled = threading.Event()
+                    first_output_sent = await self._emit_stream(
+                        connection,
+                        session.stream_text(message.text, cancelled.is_set),
+                        first_text_at,
+                        first_output_sent,
+                        cancelled,
+                    )
+                elif isinstance(message, TtsEosMessage):
+                    buffered_terminal_handled = True
+                    first_output_sent = await self._finish_session(
+                        connection,
+                        session,
+                        buffered_chunks,
+                        first_text_at,
+                        first_output_sent,
+                    )
+                    await connection.close()
+                    return
+        finally:
+            if (
+                self.config.delivery_mode == "buffered_turn"
+                and not buffered_terminal_handled
+            ):
+                self.metrics.buffered_turn_failures.labels(
+                    reason="disconnect"
+                ).inc()
+
+    async def _collect_stream(
+        self,
+        connection: ServerConnection,
+        events: Iterator[TtsStepEvent],
+        cancelled: threading.Event,
+        max_audio_samples: int,
+    ) -> tuple[list[TtsStepEvent], int]:
+        connection_closed = asyncio.create_task(connection.wait_closed())
+        next_event: asyncio.Task[TtsStepEvent | None] | None = None
+        collected: list[TtsStepEvent] = []
+        audio_samples = 0
+        try:
+            while True:
+                next_event = asyncio.create_task(
+                    asyncio.to_thread(_next_event, events)
                 )
-            elif isinstance(message, TtsEosMessage):
-                cancelled = threading.Event()
-                first_output_sent = await self._emit_stream(
-                    connection,
-                    session.stream_eos(cancelled.is_set),
-                    first_text_at,
-                    first_output_sent,
-                    cancelled,
+                done, _pending = await asyncio.wait(
+                    (next_event, connection_closed),
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-                await connection.close()
-                return
+                if connection_closed in done:
+                    cancelled.set()
+                    try:
+                        await next_event
+                    except Exception:
+                        pass
+                    raise _ClientDisconnected
+                event = next_event.result()
+                if event is None:
+                    return collected, audio_samples
+                if event.kind == "audio":
+                    audio_samples += len(event.pcm or [])
+                    if audio_samples > max_audio_samples:
+                        raise _BufferedAudioLimitExceeded
+                collected.append(event)
+        finally:
+            cancelled.set()
+            connection_closed.cancel()
+            try:
+                await connection_closed
+            except asyncio.CancelledError:
+                pass
+            if next_event is not None and not next_event.done():
+                try:
+                    await asyncio.shield(next_event)
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+            close_events = getattr(events, "close", None)
+            if close_events is not None:
+                close_events()
+
+    async def _finish_session(
+        self,
+        connection: ServerConnection,
+        session: TtsSession,
+        buffered_chunks: list[str],
+        first_text_at: float | None,
+        first_output_sent: bool,
+    ) -> bool:
+        cancelled = threading.Event()
+        if self.config.delivery_mode == "streaming":
+            return await self._emit_stream(
+                connection,
+                session.stream_eos(cancelled.is_set),
+                first_text_at,
+                first_output_sent,
+                cancelled,
+            )
+        if not buffered_chunks:
+            return first_output_sent
+        buffered_text = " ".join(buffered_chunks)
+        eos_started_at = time.monotonic()
+        max_audio_samples = int(
+            self.config.max_buffered_audio_seconds * 24_000
+        )
+        events = _buffered_turn_events(
+            session,
+            buffered_text,
+            cancelled.is_set,
+        )
+        try:
+            collected, audio_samples = await self._collect_stream(
+                connection,
+                events,
+                cancelled,
+                max_audio_samples,
+            )
+        except _BufferedAudioLimitExceeded:
+            self.metrics.buffered_turn_failures.labels(
+                reason="output_limit"
+            ).inc()
+            await connection.send(
+                pack_message(
+                    TtsErrorMessage(
+                        message="buffered TTS output exceeds configured limit"
+                    )
+                )
+            )
+            return first_output_sent
+        except _ClientDisconnected:
+            self.metrics.buffered_turn_failures.labels(
+                reason="disconnect"
+            ).inc()
+            raise
+        except Exception:
+            self.metrics.buffered_turn_failures.labels(
+                reason="generation"
+            ).inc()
+            logger.exception("tts: buffered turn generation failed")
+            await connection.send(
+                pack_message(
+                    TtsErrorMessage(
+                        message="buffered TTS generation failed"
+                    )
+                )
+            )
+            return first_output_sent
+        synthesis_seconds = time.monotonic() - eos_started_at
+        self.metrics.buffered_input_characters.observe(
+            len(buffered_text)
+        )
+        self.metrics.buffered_audio_seconds.observe(
+            audio_samples / 24_000
+        )
+        self.metrics.buffered_synthesis_seconds.observe(
+            synthesis_seconds
+        )
+        self.metrics.buffered_eos_to_first_emit_seconds.observe(
+            time.monotonic() - eos_started_at
+        )
+        return await self._emit(
+            connection,
+            collected,
+            first_text_at,
+            first_output_sent,
+        )
 
     async def _emit_stream(
         self,
@@ -391,6 +599,10 @@ async def _serve(config: TtsConfig) -> None:
         config.host,
         config.port,
         process_request=process_request,
+        # Stock Unmute streams one WebSocket data frame per LLM word. Keep a
+        # bounded burst in memory so socket reads don't pause before later Ping
+        # control frames while MLX is still generating an earlier word.
+        max_queue=1024,
     ):
         logger.info("tts: listening on ws://%s:%d%s", config.host, config.port, PROTOCOL_PATH)
         try:

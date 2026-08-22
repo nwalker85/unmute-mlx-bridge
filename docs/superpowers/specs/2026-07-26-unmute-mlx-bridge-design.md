@@ -112,9 +112,11 @@ The default STT model is `kyutai/stt-1b-en_fr-candle`, loaded through
 `kyutai/stt-1b-en_fr-mlx` checkpoint transcribes audio but omits the extra
 heads required for the `Step.prs[2]` semantic-VAD pause signal. The default TTS
 model is `kyutai/tts-1.6b-en_fr`. Model identifiers and TTS quantization are
-configuration values. The reference canary starts TTS at 8-bit quantization
-and records whether it is faster than real time before considering higher
-fidelity.
+configuration values. TTS generates 24 audio codebooks by default, matching
+stock Unmute's production TTS configuration rather than `moshi-mlx`'s
+higher-fidelity 32-codebook default. The reference canary starts TTS at 8-bit
+quantization and records whether it is faster than real time before considering
+higher fidelity.
 
 ## Wire Contracts
 

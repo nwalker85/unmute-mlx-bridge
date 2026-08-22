@@ -77,6 +77,7 @@ class TtsModelBundle:
         hf_repo: str,
         voice_repo: str = DEFAULT_DSM_TTS_VOICE_REPO,
         quantize_bits: int | None = None,
+        n_q: int = 24,
     ) -> TtsModelBundle:
         import mlx.core as mx
         import mlx.nn as nn
@@ -127,6 +128,7 @@ class TtsModelBundle:
             max_padding=8,
             initial_padding=2,
             final_padding=2,
+            n_q=n_q,
             padding_bonus=0.0,
             raw_config=raw_config,
         )
@@ -160,6 +162,10 @@ class TtsSession:
     bundle: TtsModelBundle
     voice: str | Path | None
     max_gen_length: int
+    seed: int = 42
+    temperature: float = 0.8
+    top_k: int = 250
+    cfg_alpha: float | None = None
 
     state: object = field(init=False)
     lm_gen: LmGen = field(init=False)
@@ -169,6 +175,7 @@ class TtsSession:
     _pending_frames: list[mx.array] = field(default_factory=list, init=False)
     _pending_word: tuple[str, int] | None = field(default=None, init=False)
     _emitted_transcript_len: int = field(default=0, init=False)
+    _first_text_chunk: bool = field(default=True, init=False)
 
     def __post_init__(self) -> None:
         import mlx.core as mx
@@ -182,6 +189,7 @@ class TtsSession:
         for cache_entry in tts_model.lm.depformer_cache:
             cache_entry.reset()
         tts_model.mimi.reset_all()
+        mx.random.seed(self.seed)
 
         if tts_model.multi_speaker:
             if isinstance(self.voice, Path):
@@ -193,8 +201,16 @@ class TtsSession:
             voices = [voice_path]
         else:
             voices = []
+        cfg_coef_conditioning = self.bundle.cfg_coef_conditioning
+        if self.cfg_alpha is not None:
+            if self.cfg_alpha not in tts_model.valid_cfg_conditionings:
+                raise ValueError(
+                    f"unsupported cfg_alpha {self.cfg_alpha}; expected one of "
+                    f"{sorted(tts_model.valid_cfg_conditionings)}"
+                )
+            cfg_coef_conditioning = self.cfg_alpha
         attributes = tts_model.make_condition_attributes(
-            voices, self.bundle.cfg_coef_conditioning
+            voices, cfg_coef_conditioning
         )
 
         self.state = tts_model.machine.new_state([])
@@ -217,24 +233,17 @@ class TtsSession:
         self._cross_attention_src = cross_attention_src
 
         def _on_text_hook(text_tokens: mx.array) -> None:
-            # NOTE: `text_tokens` has shape (batch, 1), so `token` here is a
-            # single-element list, not a scalar. `StateMachine.process`'s `token
-            # not in [new_word, pad]` clamp therefore always fires, and
-            # `new_word` is driven by the padding countdown rather than the
-            # model spontaneously sampling `token_ids.new_word`. Verified this
-            # is not an adaptation bug: the *exact same* pattern (no `token[0]`
-            # unpacking) is used both by the upstream reference streaming script
-            # (`tts_mlx_streaming.py::TTSGen._on_text_hook`) and by real
-            # `moshi-server`'s own production Python TTS glue
-            # (`rust/moshi-server/tts.py::TTSService._on_text_hook`) — only the
-            # *batch* `TTSModel.generate()` path unpacks `token[0]`, a different
-            # call site with a different shape convention.
+            # moshi-mlx 0.3.0 added batching, so each item has shape (1,) here.
+            # StateMachine.process expects the scalar token, matching the
+            # package's batch TTS implementation.
             tokens = text_tokens.tolist()
             out_tokens = []
             for token in tokens:
-                out_token, _consumed = tts_model.machine.process(self.offset, self.state, token)
+                out_token, _consumed = tts_model.machine.process(
+                    self.offset, self.state, token[0]
+                )
                 out_tokens.append(out_token)
-            text_tokens[:] = mx.array(out_tokens, dtype=mx.int64)
+            text_tokens[:] = mx.array(out_tokens, dtype=mx.int64)[:, None]
 
         def _on_audio_hook(audio_tokens: mx.array) -> None:
             delays = tts_model.lm.delays
@@ -246,8 +255,8 @@ class TtsSession:
         self.lm_gen = LmGen(
             tts_model.lm,
             max_steps=self.max_gen_length,
-            text_sampler=Sampler(temp=tts_model.temp),
-            audio_sampler=Sampler(temp=tts_model.temp),
+            text_sampler=Sampler(temp=self.temperature, top_k=self.top_k),
+            audio_sampler=Sampler(temp=self.temperature, top_k=self.top_k),
             on_text_hook=_on_text_hook,
             on_audio_hook=_on_audio_hook,
         )
@@ -261,8 +270,19 @@ class TtsSession:
         """Tokenize `text` into word `Entry`s and run generation steps until the
         state machine needs another word (mirrors `TTSGen.process()`).
         """
+        from moshi_mlx.models.tts import script_to_entries
+
         tts_model = self.bundle.tts_model
-        entries = tts_model.prepare_script([text], padding_between=1)
+        entries = script_to_entries(
+            tts_model.tokenizer,
+            tts_model.machine.token_ids,
+            tts_model.mimi.frame_rate,
+            [text],
+            multi_speaker=self._first_text_chunk and tts_model.multi_speaker,
+            padding_between=1,
+        )
+        if entries:
+            self._first_text_chunk = False
         self.state.entries.extend(entries)
         while len(self.state.entries) > tts_model.machine.second_stream_ahead:
             if cancelled is not None and cancelled():
@@ -329,7 +349,9 @@ class TtsSession:
                 )
             self._pending_word = (word, step)
 
-        if frame is not None:
+        if frame is not None and not (
+            frame == tts_model.machine.token_ids.zero
+        ).any():
             pcm = tts_model.mimi.decode_step(frame[:, :, None])
             pcm = mx.clip(pcm[0, 0], -1, 1)
             events.append(TtsStepEvent(kind="audio", pcm=pcm.tolist()))
