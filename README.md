@@ -31,10 +31,10 @@ and no configuration either: the bridge's default ports are already the ones
 Unmute looks for.
 
 > **Verified on a Mac Mini M4 Pro.** Real Kyutai weights, real MLX inference,
-> and a multi-turn conversation driven by the pinned stock Unmute backend.
-> TTS generates *below* real time on this hardware — see
-> [Performance envelope](#performance-envelope) for the number and what it
-> costs you.
+> and multi-turn conversations driven by the pinned stock Unmute backend. TTS
+> throughput sits below real time on this hardware, which `buffered_turn` is
+> designed around — see [Performance envelope](#performance-envelope) for the
+> measured numbers before you plan against it.
 
 <!--
   DEMO VIDEO — not yet recorded. See docs/demo-recording.md for what to capture
@@ -121,10 +121,15 @@ codebook depth:
 | 4-bit | — | **Rejected — corrupts this model** (gibberish, mixed voices) |
 | Reduced codebook depth | faster | **Rejected — breaks the autoregressive contract** (unintelligible) |
 
-**Read that honestly: TTS on this hardware generates slower than real time.**
-An output rate of 0.594× means ~3.5 seconds of speech takes ~6 seconds to
-synthesize. That is the single most important number in this README, and it is
-why the delivery mode matters:
+**TTS generation on this hardware is below real time** — 0.594× means ~3.5
+seconds of speech takes ~6 seconds to synthesize. That figure is *throughput*,
+not perceived responsiveness, and the two come apart in practice: with
+`buffered_turn`, the reference deployment sustains real multi-turn
+conversations that feel responsive, because the wait lands once ahead of the
+turn instead of as gaps inside it. Read the table as a capacity number to plan
+against, not as a verdict on how it feels.
+
+It is why the delivery mode matters:
 
 - **`streaming`** (default) — emits audio per chunk, as upstream does. On
   hardware that generates below real time, playback can underrun mid-sentence.
@@ -271,10 +276,12 @@ this project asks.
 
 **Do I need a GPU?** No. MLX uses the Mac's unified memory and Metal.
 
-**Is it fast enough for live conversation?** On a Mac Mini M4 Pro, TTS
-generates below real time — see [Performance envelope](#performance-envelope).
-It is usable with `buffered_turn`; it is not the same experience as a CUDA box.
-Measure your own hardware before committing.
+**Is it fast enough for live conversation?** Yes, in the reference deployment —
+a Mac Mini M4 Pro running `buffered_turn` sustains real multi-turn
+conversations. TTS *throughput* is below real time (see
+[Performance envelope](#performance-envelope)), so long single turns cost a
+longer pre-speech wait, and `streaming` mode can underrun. Measure your own
+hardware before committing to a latency budget.
 
 **First start hangs.** It's downloading several GB of weights. Poll
 `GET /readyz` — `503` until loaded.
