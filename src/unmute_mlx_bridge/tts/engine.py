@@ -152,6 +152,44 @@ class TtsModelBundle:
         )
 
 
+class VoiceEmbeddingError(ValueError):
+    """Raised when a client-supplied `Voice` message (custom cloned-voice
+    embeddings) cannot be applied as session conditioning: a malformed shape, a
+    shape/payload mismatch that slipped past protocol-level validation, or a
+    model that does not support multi-speaker conditioning. Always caught by
+    `tts/server.py` and reported as a protocol `Error` — never allowed to
+    propagate as a crash or a silent fallback to the session's existing voice.
+    """
+
+
+def _condition_tensors_from_attributes(
+    tts_model: TTSModel, attributes: object
+) -> tuple[ConditionTensor | None, object]:
+    """Build the `(ct, cross_attention_src)` pair `LmGen.step` expects from a
+    `ConditionAttributes`. Shared by `TtsSession.__post_init__` (initial
+    conditioning from the resolved query-param/default voice) and
+    `TtsSession.apply_voice_embedding` (session-start re-conditioning from a
+    client-supplied `Voice` message), so the two conditioning paths can never
+    drift apart.
+    """
+    from moshi_mlx.modules.conditioner import ConditionTensor
+
+    ct: ConditionTensor | None = None
+    cross_attention_src = None
+    assert tts_model.lm.condition_provider is not None
+    for key, value in attributes.text.items():
+        attr_ct = tts_model.lm.condition_provider.condition_tensor(key, value)
+        ct = attr_ct if ct is None else ConditionTensor(ct.tensor + attr_ct.tensor)
+    for key, value in attributes.tensor.items():
+        conditioner = tts_model.lm.condition_provider.conditioners[key]
+        ca_src = conditioner.condition(value)
+        if cross_attention_src is None:
+            cross_attention_src = ca_src
+        else:
+            raise ValueError("multiple cross-attention conditioners")
+    return ct, cross_attention_src
+
+
 @dataclass
 class TtsSession:
     """Per-connection generation state, adapted from `tts_mlx_streaming.py`'s
@@ -176,11 +214,21 @@ class TtsSession:
     _pending_word: tuple[str, int] | None = field(default=None, init=False)
     _emitted_transcript_len: int = field(default=0, init=False)
     _first_text_chunk: bool = field(default=True, init=False)
+    # Set the moment `stream_text` is first called (even for a chunk that
+    # produces no generation steps yet). Real `moshi-server` reads a
+    # connection's pending `Voice` only on the channel-init entry
+    # (`rust/moshi-server/tts.py:340-353`'s `if new_entry[0] == -1:` branch,
+    # fed once per channel by `py_module.rs:237-240`'s
+    # `if !c.sent_init { t.push(-1); ... }`) -- every later `Text` chunk takes
+    # a different code path that never reads `voice`. `apply_voice_embedding`
+    # uses this flag to reject a `Voice` message once generation has started,
+    # enforcing the same session-start-only contract at the engine level that
+    # `tts/server.py` also enforces via its own latch.
+    _started: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         import mlx.core as mx
         from moshi_mlx.models.generate import LmGen
-        from moshi_mlx.modules.conditioner import ConditionTensor
         from moshi_mlx.utils.sampling import Sampler
 
         tts_model = self.bundle.tts_model
@@ -215,22 +263,9 @@ class TtsSession:
 
         self.state = tts_model.machine.new_state([])
         self.offset = 0
-
-        ct: ConditionTensor | None = None
-        cross_attention_src = None
-        assert tts_model.lm.condition_provider is not None
-        for key, value in attributes.text.items():
-            attr_ct = tts_model.lm.condition_provider.condition_tensor(key, value)
-            ct = attr_ct if ct is None else ConditionTensor(ct.tensor + attr_ct.tensor)
-        for key, value in attributes.tensor.items():
-            conditioner = tts_model.lm.condition_provider.conditioners[key]
-            ca_src = conditioner.condition(value)
-            if cross_attention_src is None:
-                cross_attention_src = ca_src
-            else:
-                raise ValueError("multiple cross-attention conditioners")
-        self._ct = ct
-        self._cross_attention_src = cross_attention_src
+        self._ct, self._cross_attention_src = _condition_tensors_from_attributes(
+            tts_model, attributes
+        )
 
         def _on_text_hook(text_tokens: mx.array) -> None:
             # moshi-mlx 0.3.0 added batching, so each item has shape (1,) here.
@@ -261,6 +296,131 @@ class TtsSession:
             on_audio_hook=_on_audio_hook,
         )
 
+    def apply_voice_embedding(self, embeddings: list[float], shape: list[int]) -> None:
+        """Recondition this session on a client-supplied voice embedding (`Voice`
+        protocol message) instead of the named voice resolved from `voice=`/
+        `voices=` query parameters or config default that `__post_init__` already
+        conditioned this session on.
+
+        Session-start only, enforced here at the engine level (not only by
+        `tts/server.py`'s own latch) so a direct user of `TtsSession` gets the
+        same contract: raises `VoiceEmbeddingError` once `stream_text` has been
+        called at least once (see `_started`). Real `moshi-server` mirrors this
+        because it reads a connection's pending `Voice` only on the
+        channel-init entry (`rust/moshi-server/tts.py:340-353`'s
+        `if new_entry[0] == -1:` branch, fed once per channel by
+        `py_module.rs:237-240`'s `if !c.sent_init { t.push(-1); ... }`) --
+        every later `Text` chunk takes a different code path that never reads
+        `voice`, so upstream silently forwards and then ignores any `Voice`
+        message received after the first `Text`. This bridge instead rejects
+        it explicitly here (and in `tts/server.py`, before generation is even
+        attempted), rather than accepting it and silently discarding the
+        request the way upstream does.
+
+        `moshi_mlx.models.tts.TTSModel.make_condition_attributes` builds the same
+        single-voice tensor layout but only accepts voice *paths* to load from a
+        `.safetensors` file on disk; this bridge's `Voice` message carries the
+        `speaker_wavs` tensor in-memory instead, so that ~20-line tensor
+        construction is mirrored here rather than round-tripping embeddings
+        through a temp file just to reuse a function built for paths.
+
+        Raises `VoiceEmbeddingError` on any malformed or mismatched input, a
+        model that does not support multi-speaker conditioning, or a session
+        where generation has already started — never raises a bare/unexpected
+        exception, and never silently keeps the prior voice while pretending
+        to have applied the new one.
+        """
+        import mlx.core as mx
+
+        if self._started:
+            raise VoiceEmbeddingError(
+                "voice conditioning is fixed once generation starts; upstream "
+                "moshi-server only reads the voice on a channel's init entry "
+                "(rust/moshi-server/tts.py:340-353, "
+                "rust/moshi-server/src/py_module.rs:237-240) and silently "
+                "ignores a Voice message received afterward — this bridge "
+                "rejects it explicitly instead"
+            )
+
+        tts_model = self.bundle.tts_model
+        if not tts_model.multi_speaker:
+            raise VoiceEmbeddingError(
+                "this model does not support multi-speaker conditioning; "
+                "custom Voice embeddings cannot be applied"
+            )
+        if len(shape) != 3:
+            raise VoiceEmbeddingError(
+                f"voice embedding shape must have exactly 3 dimensions, got {shape!r}"
+            )
+        if any(dim <= 0 for dim in shape):
+            # Defense in depth: `protocol/tts.py::TtsVoiceMessage` already
+            # rejects this structurally, but a non-positive dimension (e.g.
+            # `shape=[1, 512, 0]` with `embeddings=[]`) can make the product
+            # of `shape` accidentally match `len(embeddings)` below, which
+            # would otherwise reach `reshape` and have it silently infer the
+            # missing dimension instead of erroring.
+            raise VoiceEmbeddingError(
+                f"voice embedding shape {shape!r} must have strictly positive dimensions"
+            )
+        expected_values = 1
+        for dim in shape:
+            expected_values *= dim
+        if expected_values != len(embeddings):
+            raise VoiceEmbeddingError(
+                f"voice embedding shape {shape} implies {expected_values} values, "
+                f"but {len(embeddings)} were provided"
+            )
+
+        try:
+            emb = mx.array(embeddings, dtype=mx.float32).reshape(shape)
+            max_speakers = tts_model.max_speakers
+            voice_tensor = mx.zeros((1, max_speakers, emb.shape[2], emb.shape[1]))
+            mask = mx.zeros((1, max_speakers, emb.shape[2]), dtype=mx.uint8)
+            voice_tensor[:, 0, :, :] = emb.swapaxes(1, 2)
+            mask[:, 0, :] = True
+            voice_tensor = voice_tensor.reshape(1, -1, voice_tensor.shape[-1])
+            mask = mask.reshape(1, -1)
+        except Exception as exc:
+            raise VoiceEmbeddingError(
+                f"could not build voice embedding tensor: {exc}"
+            ) from exc
+
+        from moshi_mlx.modules.conditioner import ConditionAttributes, TensorCondition
+
+        cfg_coef_conditioning = self.bundle.cfg_coef_conditioning
+        if self.cfg_alpha is not None:
+            cfg_coef_conditioning = self.cfg_alpha
+        text: dict[str, str | None] = {"control": "ok"}
+        text["cfg"] = (
+            None
+            if cfg_coef_conditioning is None
+            else format(cfg_coef_conditioning, ".1f")
+        )
+
+        # Note: only the shared `(ct, cross_attention_src)` construction below
+        # is guaranteed not to drift from `__post_init__`'s path
+        # (`_condition_tensors_from_attributes`). This `ConditionAttributes`
+        # construction itself is duplicated, not shared, and already diverges:
+        # upstream's `make_condition_attributes` raises `ValueError` when
+        # `cfg_coef_conditioning not in valid_cfg_conditionings`, while this
+        # path only formats the value with no such validation. Not currently
+        # reachable (cfg_alpha is already validated against
+        # `valid_cfg_conditionings` in `__post_init__`, and the config-default
+        # `cfg_coef_conditioning` is trusted bundle state), but a real
+        # divergence if either assumption ever changes.
+        attributes = ConditionAttributes(
+            text=text,
+            tensor={"speaker_wavs": TensorCondition(voice_tensor, mask)},
+        )
+        try:
+            self._ct, self._cross_attention_src = _condition_tensors_from_attributes(
+                tts_model, attributes
+            )
+        except Exception as exc:
+            raise VoiceEmbeddingError(
+                f"could not apply voice embedding conditioning: {exc}"
+            ) from exc
+
     def push_text(self, text: str) -> list[TtsStepEvent]:
         return list(self.stream_text(text))
 
@@ -269,7 +429,14 @@ class TtsSession:
     ) -> Iterator[TtsStepEvent]:
         """Tokenize `text` into word `Entry`s and run generation steps until the
         state machine needs another word (mirrors `TTSGen.process()`).
+
+        Marks the session as started (see `_started`) before doing anything
+        else: this is the signal `apply_voice_embedding` uses to reject a
+        `Voice` message once generation is underway (RAV-1504), matching real
+        `moshi-server`'s session-start-only conditioning.
         """
+        self._started = True
+
         from moshi_mlx.models.tts import script_to_entries
 
         tts_model = self.bundle.tts_model

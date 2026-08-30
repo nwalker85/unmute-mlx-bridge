@@ -20,7 +20,7 @@ from websockets.asyncio.server import serve
 from unmute_mlx_bridge.tts import server as tts_server_module
 from unmute_mlx_bridge.config import TtsConfig
 from unmute_mlx_bridge.observability import build_process_request
-from unmute_mlx_bridge.tts.engine import TtsStepEvent
+from unmute_mlx_bridge.tts.engine import TtsStepEvent, VoiceEmbeddingError
 from unmute_mlx_bridge.tts.server import PROTOCOL_PATH, TtsServer
 
 
@@ -47,10 +47,16 @@ class FakeSession:
     cfg_alpha: float | None = None
     _step: int = field(default=0, init=False)
     text_inputs: list[str] = field(default_factory=list, init=False)
+    applied_voice_embeddings: list[tuple[list[float], list[int]]] = field(
+        default_factory=list, init=False
+    )
     instances: ClassVar[list[FakeSession]] = []
 
     def __post_init__(self):
         self.instances.append(self)
+
+    def apply_voice_embedding(self, embeddings: list[float], shape: list[int]) -> None:
+        self.applied_voice_embeddings.append((embeddings, shape))
 
     def stream_text(self, text: str, _cancelled=lambda: False):
         self.text_inputs.append(text)
@@ -64,6 +70,21 @@ class FakeSession:
     def stream_eos(self, _cancelled=lambda: False):
         self._step += 1
         yield TtsStepEvent(kind="audio", pcm=[0.0, 0.0])
+
+
+@dataclass
+class VoiceRejectingFakeSession(FakeSession):
+    """A fake engine whose `apply_voice_embedding` always fails, exercising the
+    server's "never crash, never silently fall back" handling of an engine-level
+    rejection (as opposed to the protocol-level shape/payload-length rejection,
+    which never reaches the session at all).
+    """
+
+    def apply_voice_embedding(self, embeddings: list[float], shape: list[int]) -> None:
+        raise VoiceEmbeddingError(
+            "this model does not support multi-speaker conditioning; "
+            "custom Voice embeddings cannot be applied"
+        )
 
 
 @asynccontextmanager
@@ -723,18 +744,167 @@ async def test_legacy_null_byte_eos_is_accepted(tts_server):
             await asyncio.wait_for(ws.recv(), timeout=0.2)
 
 
-async def test_voice_message_is_explicitly_rejected(tts_server):
+async def test_voice_message_before_text_conditions_session_at_start(tts_server):
+    """RAV-1504: `Voice` at session start (before any `Text`) is accepted as an
+    alternative to the `voice=`/`voices=` query parameters, matching real
+    `moshi-server`'s `py_module.rs::InMsg::Voice`.
+    """
+    _server, port = tts_server
+    embeddings = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    shape = [1, 2, 3]
+    async with await _connect(port) as ws:
+        await _recv_message(ws)  # Ready
+        await ws.send(
+            msgpack.packb({"type": "Voice", "embeddings": embeddings, "shape": shape})
+        )
+        await ws.send(msgpack.packb({"type": "Text", "text": "hi"}))
+        audio = await _recv_message(ws)
+        assert audio["type"] == "Audio"
+
+    session = FakeSession.instances[-1]
+    assert session.applied_voice_embeddings == [(embeddings, shape)]
+    assert session.text_inputs == ["hi"]
+
+
+async def test_voice_message_after_text_is_rejected_once_generation_started(
+    tts_server,
+):
+    """A `Voice` message arriving after `Text` has already started the turn is
+    rejected -- a deliberate, stricter-than-upstream deviation, not a
+    compatibility gap: real `moshi-server` reads a connection's pending voice
+    only on the channel-init entry (`rust/moshi-server/tts.py:340-353`,
+    `rust/moshi-server/src/py_module.rs:237-240`) and would silently drop this
+    message instead of erroring.
+    """
     _server, port = tts_server
     async with await _connect(port) as ws:
         await _recv_message(ws)  # Ready
-        await ws.send(msgpack.packb({"type": "Voice", "embeddings": [0.1], "shape": [1]}))
+        await ws.send(msgpack.packb({"type": "Text", "text": "hi"}))
+        await _recv_message(ws)  # Audio
+        await _recv_message(ws)  # Text (word event)
+
+        await ws.send(
+            msgpack.packb({"type": "Voice", "embeddings": [0.1, 0.2], "shape": [1, 2]})
+        )
         error = await _recv_message(ws)
         assert error["type"] == "Error"
-        assert "not supported" in error["message"]
-        # Connection stays open afterwards.
+        assert "generation started" in error["message"]
+        assert "fixed at session start" in error["message"]
+
+        # Connection stays open and keeps generating from the original voice.
         await ws.send(msgpack.packb({"type": "Text", "text": "still works"}))
         audio = await _recv_message(ws)
         assert audio["type"] == "Audio"
+
+    session = FakeSession.instances[-1]
+    assert session.applied_voice_embeddings == []
+
+
+async def test_empty_text_message_locks_voice_conditioning_to_session_start(
+    tts_server,
+):
+    """"Before any Text message" is read literally: even an empty `Text` message
+    (which the server otherwise ignores entirely) ends the session-start window
+    for `Voice`.
+    """
+    _server, port = tts_server
+    async with await _connect(port) as ws:
+        await _recv_message(ws)  # Ready
+        await ws.send(msgpack.packb({"type": "Text", "text": ""}))
+        await ws.send(
+            msgpack.packb({"type": "Voice", "embeddings": [0.1, 0.2], "shape": [1, 2]})
+        )
+        error = await _recv_message(ws)
+        assert error["type"] == "Error"
+        assert "generation started" in error["message"]
+
+    session = FakeSession.instances[-1]
+    assert session.applied_voice_embeddings == []
+
+
+async def test_voice_message_shape_payload_mismatch_is_a_protocol_error(tts_server):
+    """`shape` is validated against the flattened `embeddings` length at the
+    protocol layer (`TtsVoiceMessage`'s pydantic model validator) -- a mismatch
+    never reaches the engine, and is reported the same way any other malformed
+    frame is.
+    """
+    _server, port = tts_server
+    async with await _connect(port) as ws:
+        await _recv_message(ws)  # Ready
+        await ws.send(
+            msgpack.packb({"type": "Voice", "embeddings": [0.1, 0.2], "shape": [1, 3]})
+        )
+        error = await _recv_message(ws)
+        assert error["type"] == "Error"
+        assert "malformed frame" in error["message"]
+        assert "shape" in error["message"]
+
+        # Never a crash, never a silent fallback: the connection stays open and
+        # still works with whatever voice the session already had.
+        await ws.send(msgpack.packb({"type": "Text", "text": "still works"}))
+        audio = await _recv_message(ws)
+        assert audio["type"] == "Audio"
+
+    session = FakeSession.instances[-1]
+    assert session.applied_voice_embeddings == []
+
+
+async def test_voice_message_zero_dimension_is_a_protocol_error_never_silently_accepted(
+    tts_server,
+):
+    """Confirmed defect (RAV-1504 blocker): `shape=[1, 512, 0]` with
+    `embeddings=[]` used to be silently accepted end to end (the flattened
+    length `0` matched `len([]) == 0`) -- never a `Text` message would fail,
+    the engine would never surface an error, and the session's conditioning
+    would just be quietly discarded. It is now a protocol `Error`, and never
+    reaches the engine.
+    """
+    _server, port = tts_server
+    async with await _connect(port) as ws:
+        await _recv_message(ws)  # Ready
+        await ws.send(
+            msgpack.packb({"type": "Voice", "embeddings": [], "shape": [1, 512, 0]})
+        )
+        error = await _recv_message(ws)
+        assert error["type"] == "Error"
+        assert "malformed frame" in error["message"]
+        assert "strictly positive" in error["message"]
+
+        await ws.send(msgpack.packb({"type": "Text", "text": "still works"}))
+        audio = await _recv_message(ws)
+        assert audio["type"] == "Audio"
+
+    session = FakeSession.instances[-1]
+    assert session.applied_voice_embeddings == []
+
+
+async def test_voice_message_rejected_by_engine_is_a_protocol_error_never_a_crash():
+    """A malformed/mismatched embedding that passes protocol-level shape
+    validation but that the engine cannot apply (e.g. a model without
+    multi-speaker support) must still return a protocol `Error`, never crash the
+    connection, and never silently keep generating as if nothing happened
+    without telling the client.
+    """
+    FakeSession.instances.clear()
+    async with _running_tts_server(session_cls=VoiceRejectingFakeSession) as (
+        _server,
+        port,
+    ):
+        async with await _connect(port) as ws:
+            await _recv_message(ws)  # Ready
+            await ws.send(
+                msgpack.packb(
+                    {"type": "Voice", "embeddings": [0.1, 0.2], "shape": [1, 2]}
+                )
+            )
+            error = await _recv_message(ws)
+            assert error["type"] == "Error"
+            assert "invalid voice embedding" in error["message"]
+
+            # Connection stays open and still works afterward.
+            await ws.send(msgpack.packb({"type": "Text", "text": "still works"}))
+            audio = await _recv_message(ws)
+            assert audio["type"] == "Audio"
 
 
 async def test_second_concurrent_session_is_rejected(tts_server):

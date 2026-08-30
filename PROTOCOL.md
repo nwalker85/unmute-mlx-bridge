@@ -178,7 +178,7 @@ model-loop round-trip required.
 | `type` | Fields | Notes |
 |---|---|---|
 | `Text` | `text: str` | Appends text to be spoken. |
-| `Voice` | `embeddings: [f32]`, `shape: [usize]` | Custom cloned-voice embedding. **Explicitly rejected** by this bridge with an `Error` — a documented non-goal (see design doc), not a silently-ignored field. Real server's `py_module.rs::InMsg::Voice` accepts it as an alternative to the `voice` query param. |
+| `Voice` | `embeddings: [f32]`, `shape: [usize]` | Custom cloned-voice embedding. **Accepted at session start** (before any `Text` message), as an alternative to the `voice` query param — matching real `moshi-server`'s `py_module.rs::InMsg::Voice`. Real `moshi-server` reads a connection's pending voice only on the channel-init entry (`rust/moshi-server/tts.py:340-353`'s `if new_entry[0] == -1:` branch, fed once per channel by `rust/moshi-server/src/py_module.rs:237-240`'s `if !c.sent_init { t.push(-1); ... }`, both pinned at `kyutai-labs/moshi@e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`); every later `Text` message never reads `voice` again, so upstream silently drops any `Voice` message received after the first `Text` (RAV-1504). This bridge instead returns an explicit `Error` for a `Voice` message arriving after generation has started — a deliberate, stricter-than-upstream deviation (see below), unobservable by the pinned Unmute client, which only ever uses the `voice=` query parameter and never sends `Voice`. `shape` must account for exactly the flattened `embeddings` length and every dimension must be strictly positive (a non-positive dimension, e.g. `shape=[1, 512, 0]` with `embeddings=[]`, can otherwise make the flattened length accidentally match and reach `reshape`, which infers the missing dimension instead of erroring), or the message is rejected as malformed. |
 | `Eos` | — | Signals no more text is coming; flush and finish. |
 
 Real server (`py_module.rs::recv_loop`) also treats a raw **binary `\x00`**
@@ -296,8 +296,18 @@ The TTS default remains `kyutai/tts-1.6b-en_fr`; its
    backend-facing client never uses Ogg/Opus for these two endpoints (it's used
    for the *browser*-facing transport, a separate protocol) so this does not
    affect drop-in compatibility with Unmute specifically.
-2. **`Voice` (TTS custom cloned-voice embeddings) is explicitly rejected**, not
-   implemented. Documented non-goal.
+2. **`Voice` (TTS custom cloned-voice embeddings) is supported at session
+   start only** (RAV-1504). A client may condition a session on custom
+   embeddings before sending any `Text`, matching real `moshi-server`'s
+   `py_module.rs::InMsg::Voice`. A `Voice` message received after generation
+   has started gets an explicit `Error` — a deliberate, stricter-than-upstream
+   deviation: real `moshi-server` only reads the voice on a channel's init
+   entry (`rust/moshi-server/tts.py:340-353`, `rust/moshi-server/src/py_module.rs:237-240`,
+   pinned at `kyutai-labs/moshi@e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`) and
+   silently drops any later `Voice` message rather than erroring. This
+   difference is unobservable by the pinned Unmute client, which only ever
+   sends `voice=`/`voices=` query parameters and never sends a `Voice`
+   message at all.
 3. **Single session per process.** Real `moshi-server`'s `BatchedAsr`/`Py`
    modules admit multiple concurrent channels (`batch_size` in the TOML). This
    bridge's first release admits exactly one; a second connection gets an

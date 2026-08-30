@@ -329,6 +329,19 @@ class TtsServer:
         buffered_chunks: list[str] = []
         buffered_chars = 0
         buffered_terminal_handled = False
+        # Session-start boundary for the `Voice` protocol message (RAV-1504):
+        # a custom voice embedding conditions the session only if it arrives
+        # before any `Text` message. Real `moshi-server` only reads a
+        # connection's pending voice on the channel-init entry
+        # (`rust/moshi-server/tts.py:340-353`'s `if new_entry[0] == -1:`
+        # branch, fed once per channel by `py_module.rs:237-240`'s
+        # `if !c.sent_init { t.push(-1); ... }`); every later `Text` message
+        # consumes a different, non-init entry that never reads `voice`, so
+        # upstream silently forwards and then ignores any post-init `Voice`
+        # message rather than raising. This bridge instead rejects it
+        # explicitly (see below). Latched on the first `Text` message seen,
+        # empty or not -- "before any Text message" is read literally.
+        voice_conditioning_locked = False
 
         try:
             async for raw in connection:
@@ -358,22 +371,57 @@ class TtsServer:
                     continue
 
                 if isinstance(message, TtsVoiceMessage):
-                    # Custom cloned-voice embeddings are a documented non-goal for
-                    # this canary; reject explicitly rather than silently ignoring
-                    # them.
-                    self.metrics.protocol_errors.inc()
-                    await connection.send(
-                        pack_message(
-                            TtsErrorMessage(
-                                message=(
-                                    "custom voice embeddings (Voice message) "
-                                    "are not supported"
+                    if voice_conditioning_locked:
+                        # Upstream moshi-server would silently forward and
+                        # then ignore this (it only reads `voice` on a
+                        # channel's init entry); this bridge rejects it
+                        # explicitly instead of accepting and silently
+                        # discarding the request.
+                        self.metrics.protocol_errors.inc()
+                        await connection.send(
+                            pack_message(
+                                TtsErrorMessage(
+                                    message=(
+                                        "Voice message after generation "
+                                        "started: voice conditioning is "
+                                        "fixed at session start (upstream "
+                                        "moshi-server reads the voice only "
+                                        "on the channel init entry and "
+                                        "silently ignores later Voice "
+                                        "messages; this bridge rejects them "
+                                        "explicitly)"
+                                    )
                                 )
                             )
                         )
+                        continue
+                    try:
+                        session.apply_voice_embedding(
+                            message.embeddings, message.shape
+                        )
+                    except Exception as exc:
+                        # Never crash on a malformed/mismatched embedding, and
+                        # never silently keep the prior voice while pretending
+                        # to have applied the new one.
+                        self.metrics.protocol_errors.inc()
+                        await connection.send(
+                            pack_message(
+                                TtsErrorMessage(
+                                    message=f"invalid voice embedding: {exc}"
+                                )
+                            )
+                        )
+                        continue
+                    logger.info(
+                        "tts: session conditioned from Voice message",
+                        extra={
+                            "event": "tts_voice_conditioned",
+                            "session_id": ctx.session_id,
+                        },
                     )
                     continue
                 if isinstance(message, TtsTextMessage):
+                    voice_conditioning_locked = True
                     if not message.text:
                         continue
                     if first_text_at is None:

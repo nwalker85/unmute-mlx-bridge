@@ -63,6 +63,75 @@ fixtures, and compatibility notes together.
   the first canary.
 - Performing a downstream production cutover before an evidence-backed
   architecture decision and explicit cutover approval.
+- Mid-stream `Voice` re-conditioning: changing an already-generating session's
+  voice from a `Voice` message received after `Text` has started. See the
+  RAV-1504 addendum below — session-*start* `Voice` conditioning is no longer
+  a non-goal.
+
+### Addendum (RAV-1504): session-start `Voice` conditioning is no longer a non-goal
+
+The first canary rejected the TTS `Voice` protocol message outright (custom
+cloned-voice embeddings) and documented that rejection as a non-goal — see the
+TTS section below and `PROTOCOL.md`. That decision is reversed for this
+change: the bridge now accepts `Voice` **at session start**, before any `Text`
+message, as an alternative to the `voice`/`voices` query parameters, matching
+real `moshi-server`'s `py_module.rs::InMsg::Voice`.
+
+Verified against upstream's actual Python TTS consumer, not just its Rust
+producer: `rust/moshi-server/tts.py:340-353` (pinned at
+`kyutai-labs/moshi@e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`, the
+`crate::TTS_PY` script embedded by `main.rs:31`) reads `voice` inside
+`step()` only under `if new_entry[0] == -1:` — the channel-init entry.
+`rust/moshi-server/src/py_module.rs:237-240` pushes that init token exactly
+once per channel (`if !c.sent_init { t.push(-1); c.sent_init = true; }`). No
+other code path reads `voice`. So upstream honours a `Voice` message only if
+it is pending before the channel's first `Text`; any later `Voice` message is
+still forwarded by the Rust side but silently ignored by the Python
+consumer — there is no per-chunk or sticky re-conditioning upstream.
+
+A prior pass of this change (before this correction) misread the Rust
+producer alone and implemented a per-chunk, one-shot pending-slot mechanism:
+`apply_voice_embedding` staged a pending `(ct, cross_attention_src)` pair that
+`stream_text` swapped in at the top of every chunk, then reverted afterward.
+That was reverted for two reasons: (a) upstream does not do this — see the
+verified evidence above — and (b) `moshi_mlx`'s transformer, like real
+`moshi-server`'s Torch backend, caches cross-attention K/V per session
+(`modules/transformer.py:95-106`; upstream's equivalent is
+`moshi/modules/transformer.py::_get_cross_attention`) and never recomputes it
+after the first step, so swapping the conditioning at a later chunk was a
+no-op in practice — confirmed live on real weights: the per-chunk path
+produced byte-identical audio across four conditions that should have
+differed if the swap had any effect.
+
+This bridge now conditions the session once, at `__post_init__`
+(`tts/engine.py::TtsSession`) from the resolved `voice=`/`voices=` query
+parameter or config default, and lets a `Voice` message received before the
+first `Text` re-condition it the same way
+(`TtsSession.apply_voice_embedding`), enforced with a session-start guard at
+both the engine level (`TtsSession._started`) and the server level
+(`tts/server.py`'s `voice_conditioning_locked` latch, set on the first `Text`
+message seen, empty or not). A `Voice` message received after that point
+gets an explicit protocol `Error` — a deliberate, stricter-than-upstream
+deviation (upstream would silently drop it instead), not a compatibility
+gap; that difference is unobservable by the pinned Unmute client, which only
+ever uses the `voice=`/`voices=` query parameters and never sends `Voice`.
+
+Rationale for supporting client-supplied embeddings at all: `moshi_mlx.models.tts.TTSModel.make_condition_attributes` builds
+its single-voice conditioning tensor from an in-memory array regardless of
+whether that array came from a `.safetensors` file on disk (the only input it
+accepts) or a client-supplied payload; there is no technical reason a client
+holding an already-resolved voice embedding should have to publish it as a
+named voice file just to use it. `tts/engine.py::TtsSession` now mirrors that
+tensor construction directly for client-supplied embeddings (see
+`apply_voice_embedding`), without forking or patching `moshi_mlx`.
+
+What remains a non-goal, unchanged: **mid-stream** re-conditioning changing
+the *un-rejected*, in-progress generation itself — i.e., this bridge does not
+attempt to make a post-session-start `Voice` message actually take effect
+(upstream cannot do this either; see the verified evidence above). It is
+rejected with an explicit `Error` rather than silently accepted and
+discarded, which is a deliberate stricter-than-upstream choice, not a claim
+that mid-stream re-conditioning is technically impossible.
 
 ## System Boundary
 
@@ -171,9 +240,16 @@ Accepted client messages:
 - `{"type": "Text", "text": string}` appends text.
 - `{"type": "Eos"}` closes the utterance input.
 
-`Voice` messages are parsed and rejected with an explicit unsupported-feature
-`Error` in the first canary. This makes the contract honest without silently
-ignoring custom voice embeddings.
+`{"type": "Voice", "embeddings": [float, ...], "shape": [int, ...]}`
+conditions the session on a custom cloned-voice embedding, but **only at
+session start**, before any `Text` message (RAV-1504; see the Non-Goals
+addendum above). `shape` must account for exactly the flattened `embeddings`
+length, or the message is rejected as malformed. A `Voice` message received
+after `Text` has already started the turn still gets an explicit `Error` —
+a deliberate, stricter-than-upstream deviation (real `moshi-server` reads
+`voice` only on the channel-init entry and silently ignores it afterward; see
+the addendum above) — so the contract stays honest without silently
+discarding a custom voice embedding it received but did not apply.
 
 Emitted server messages:
 

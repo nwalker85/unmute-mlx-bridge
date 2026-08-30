@@ -41,15 +41,56 @@ def test_client_eos_message_parses():
     assert message.type == "Eos"
 
 
-def test_client_voice_message_parses_but_is_a_server_policy_decision():
-    """The message itself is valid protocol — whether the server accepts custom
-    voice embeddings is a server-side policy choice (this bridge rejects it), not
-    a parsing concern.
+def test_client_voice_message_parses_but_acceptance_is_a_server_session_state_decision():
+    """The message itself is valid protocol — whether the server *applies* it
+    (RAV-1504: accepted at session start, rejected once generation has
+    started) is a server-side session-state decision, not a parsing concern.
+    This model only enforces the structural shape/payload invariant below.
     """
     raw = _client_send({"type": "Voice", "embeddings": [0.1, 0.2], "shape": [1, 2]})
     message = TtsClientMessageAdapter.validate_python(unpack_message(raw))
     assert message.type == "Voice"
     assert message.shape == [1, 2]
+
+
+def test_client_voice_message_rejects_shape_payload_length_mismatch():
+    """`shape` must account for exactly the number of flattened `embeddings`
+    values — this is a pure structural check, independent of any model-specific
+    constraint (dimensionality, multi-speaker support), which is the engine's
+    concern instead (see `tests/test_tts_engine.py`).
+    """
+    raw = _client_send({"type": "Voice", "embeddings": [0.1, 0.2], "shape": [1, 3]})
+    with pytest.raises(ValidationError, match="implies 3 values"):
+        TtsClientMessageAdapter.validate_python(unpack_message(raw))
+
+
+def test_client_voice_message_rejects_zero_dimension_with_matching_product():
+    """Confirmed defect (RAV-1504 blocker): `shape=[1, 512, 0]` with
+    `embeddings=[]` used to pass this check unmodified (the flattened length
+    `0` matched `len([]) == 0`) and reach the engine, where `reshape` would
+    silently infer the zero-length dimension instead of erroring, discarding
+    valid conditioning without any signal to the client. Any non-positive
+    dimension is now rejected here regardless of whether the product happens
+    to match.
+    """
+    raw = _client_send({"type": "Voice", "embeddings": [], "shape": [1, 512, 0]})
+    with pytest.raises(ValidationError, match="strictly positive"):
+        TtsClientMessageAdapter.validate_python(unpack_message(raw))
+
+
+def test_client_voice_message_rejects_negative_dimension():
+    raw = _client_send({"type": "Voice", "embeddings": [0.1] * 6, "shape": [1, -2, 3]})
+    with pytest.raises(ValidationError, match="strictly positive"):
+        TtsClientMessageAdapter.validate_python(unpack_message(raw))
+
+
+def test_client_voice_message_accepts_matching_shape_payload():
+    raw = _client_send(
+        {"type": "Voice", "embeddings": [0.1] * 64_000, "shape": [1, 512, 125]}
+    )
+    message = TtsClientMessageAdapter.validate_python(unpack_message(raw))
+    assert message.shape == [1, 512, 125]
+    assert len(message.embeddings) == 64_000
 
 
 def test_client_unknown_type_rejected():
