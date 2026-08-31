@@ -48,11 +48,21 @@ from unmute_mlx_bridge.protocol.stt import (
     SttWordMessage as SttWordOut,
 )
 from unmute_mlx_bridge.protocol.wire import pack_message, unpack_message
-from unmute_mlx_bridge.stt.engine import FRAME_SIZE, SttModelBundle, SttSession, SttStepEvent
+from unmute_mlx_bridge.stt.engine import (
+    FRAME_SIZE,
+    GenerationLengthLimitError,
+    SttModelBundle,
+    SttSession,
+    SttStepEvent,
+)
 
 logger = logging.getLogger(__name__)
 
 PROTOCOL_PATH = "/api/asr-streaming"
+
+#: Client-facing message for `stt.engine.GenerationLengthLimitError` (RAV-1552
+#: S2): same rationale as `tts/server.py`'s `_LENGTH_LIMIT_MESSAGE`.
+_LENGTH_LIMIT_MESSAGE = "session length limit reached; reconnect to start a fresh session"
 
 
 def _event_to_message(event: SttStepEvent):
@@ -65,6 +75,19 @@ def _event_to_message(event: SttStepEvent):
     if event.kind == "step":
         return SttStepMessage(step_idx=event.step_idx or 0, prs=event.prs or [])
     raise ValueError(f"unknown STT event kind: {event.kind}")
+
+
+async def _send_rejection(connection: ServerConnection, message: SttErrorMessage) -> None:
+    """Send a pre-`Ready` rejection `Error`, ignoring `ConnectionClosed` (RAV-1552):
+    mirrors `tts/server.py::_send_rejection` -- see its docstring. STT's only
+    pre-`Ready` rejection branch of this kind is the "still loading"/"failed to
+    load" gate below ("no free channels" is a separate, pre-existing path not in
+    scope here).
+    """
+    try:
+        await connection.send(pack_message(message))
+    except ConnectionClosed:
+        pass
 
 
 class SttServer:
@@ -111,9 +134,20 @@ class SttServer:
 
     async def handle_connection(self, connection: ServerConnection) -> None:
         if self.bundle is None:
-            await connection.send(
-                pack_message(SttErrorMessage(message="model still loading"))
-            )
+            # Distinguish "still loading" from "load already failed"
+            # (RAV-1552 B4): mirrors `tts/server.py::handle_connection`'s
+            # same fix -- see its comment and README.md's "If model load
+            # fails" section for the documented rationale for staying up and
+            # serving health probes rather than exiting.
+            self.metrics.stt_rejected_sessions_by_reason.labels(reason="loading").inc()
+            if self.health.model_load_error is not None:
+                await _send_rejection(
+                    connection, SttErrorMessage(message="model failed to load")
+                )
+            else:
+                await _send_rejection(
+                    connection, SttErrorMessage(message="model still loading")
+                )
             await connection.close()
             return
 
@@ -179,10 +213,17 @@ class SttServer:
                 try:
                     data = unpack_message(raw)
                     message = SttClientMessageAdapter.validate_python(data)
-                except Exception as exc:
+                except Exception:
+                    # Never interpolate the exception into the client-facing
+                    # message (RAV-1552 B1, same fix as `tts/server.py`'s
+                    # identical malformed-frame handler): a msgpack-unpack
+                    # failure or a pydantic `ValidationError` has no safe
+                    # subset to select from a generic `Exception`. The full
+                    # detail is always logged.
                     self.metrics.protocol_errors.inc()
+                    logger.exception("stt: malformed client frame")
                     await connection.send(
-                        pack_message(SttErrorMessage(message=f"malformed frame: {exc}"))
+                        pack_message(SttErrorMessage(message="malformed frame"))
                     )
                     continue
 
@@ -222,7 +263,49 @@ class SttServer:
                     self.metrics.stt_inference_frames_active.set(pending_audio_frames)
 
                     step_start = time.monotonic()
-                    events = await asyncio.to_thread(session.push_audio, message.pcm)
+                    try:
+                        events = await asyncio.to_thread(session.push_audio, message.pcm)
+                    except ConnectionClosed:
+                        # Symmetry with the TTS call sites (RAV-1552 S5): a
+                        # bare `except Exception:` here would swallow
+                        # `ConnectionClosed` instead of letting it propagate
+                        # to `handle_connection`'s own `except
+                        # ConnectionClosed:` (which counts it as a
+                        # cancellation), even though `push_audio` itself has
+                        # no reason to raise this -- it is defense in depth,
+                        # not a fix for an observed crash.
+                        raise
+                    except GenerationLengthLimitError:
+                        # A legitimate terminal condition, not a crash
+                        # (RAV-1552 S2): reported under its own metric label
+                        # and message, distinct from an unexpected generation
+                        # failure.
+                        self.metrics.stt_generation_failures.labels(
+                            reason="length_limit"
+                        ).inc()
+                        await connection.send(
+                            pack_message(SttErrorMessage(message=_LENGTH_LIMIT_MESSAGE))
+                        )
+                        await connection.close()
+                        return
+                    except Exception:
+                        # A generation failure here has no generator/stream
+                        # boundary to cross (unlike TTS) -- it would otherwise
+                        # propagate straight out of `_run_session`, uncaught by
+                        # `handle_connection`'s `except ConnectionClosed:`, and
+                        # close the socket abruptly with no protocol Error
+                        # (RAV-1552).
+                        self.metrics.stt_generation_failures.labels(
+                            reason="generation"
+                        ).inc()
+                        logger.exception("stt: generation failed")
+                        await connection.send(
+                            pack_message(
+                                SttErrorMessage(message="speech recognition failed")
+                            )
+                        )
+                        await connection.close()
+                        return
                     step_elapsed = time.monotonic() - step_start
 
                     n_frames = max(1, n_samples // FRAME_SIZE)

@@ -78,6 +78,7 @@ class TtsModelBundle:
         voice_repo: str = DEFAULT_DSM_TTS_VOICE_REPO,
         quantize_bits: int | None = None,
         n_q: int = 24,
+        cfg_coef: float = 2.0,
     ) -> TtsModelBundle:
         import mlx.core as mx
         import mlx.nn as nn
@@ -124,7 +125,7 @@ class TtsModelBundle:
             text_tokenizer,
             voice_repo=voice_repo,
             temp=0.6,
-            cfg_coef=1.0,
+            cfg_coef=cfg_coef,
             max_padding=8,
             initial_padding=2,
             final_padding=2,
@@ -135,10 +136,27 @@ class TtsModelBundle:
 
         cfg_coef_conditioning: float | None = None
         if tts_model.valid_cfg_conditionings:
+            if cfg_coef not in tts_model.valid_cfg_conditionings:
+                raise ValueError(
+                    f"unsupported cfg_coef {cfg_coef}; expected one of "
+                    f"{sorted(tts_model.valid_cfg_conditionings)}"
+                )
             # Model was trained with CFG distillation: pass cfg via conditioning,
             # not via a live classifier-free-guidance pass (matches tts_mlx.py).
             cfg_coef_conditioning = tts_model.cfg_coef
-            tts_model.cfg_coef = 1.0
+        # Always reset the live CFG pass to unconditional (1.0), regardless of
+        # whether this model is CFG-distilled (RAV-1552 fix). `TTSModel`'s own
+        # constructor sets `self.cfg_coef = cfg_coef` (the *live* classifier-
+        # free-guidance strength `LmGen.step`/`_make_null` reads every step to
+        # decide whether to double the batch); this used to only get reset to
+        # `1.0` inside the `if valid_cfg_conditionings:` branch above, so a
+        # non-distilled model kept whatever `cfg_coef` the constructor
+        # received (e.g. the config-default `2.0`) and silently doubled batch
+        # size/compute on every generation step instead of ever applying cfg
+        # (which, for a non-distilled model, this bridge does not implement a
+        # live CFG pass for at all -- see `cfg_coef_conditioning is None`
+        # above).
+        tts_model.cfg_coef = 1.0
 
         logger.info("tts: warming up")
         _warm_state = tts_model.machine.new_state([])
@@ -150,6 +168,18 @@ class TtsModelBundle:
             hf_repo=hf_repo,
             voice_repo=voice_repo,
         )
+
+
+class GenerationLengthLimitError(RuntimeError):
+    """Raised by `TtsSession._step` when a session reaches its configured
+    `max_gen_length`. This is a legitimate terminal condition, not a crash --
+    the client is expected to reconnect and start a fresh session -- so
+    `tts/server.py` reports it under its own `reason="length_limit"` metric
+    label and a dedicated, client-safe message, distinct from an unexpected
+    generation failure (`reason="generation"`). A dedicated exception class
+    (rather than matching the message text of a generic `RuntimeError`) keeps
+    that distinction from drifting if the message wording ever changes.
+    """
 
 
 class VoiceEmbeddingError(ValueError):
@@ -198,7 +228,13 @@ class TtsSession:
     """
 
     bundle: TtsModelBundle
-    voice: str | Path | None
+    voice: str | Path | list[str | Path] | None
+    """A single voice name/path (`voice=` query param), or a list of them for
+    a `voices=` multi-voice blend (each entry already resolved to a `Path` by
+    `tts/server.py`, or a raw name -- see `__post_init__`, which resolves any
+    raw name via `tts_model.get_voice_path` exactly like the single-voice
+    path does). The single-voice path (`str | Path | None`) is unchanged and
+    byte-identical to before this field grew a list variant (RAV-1552)."""
     max_gen_length: int
     seed: int = 42
     temperature: float = 0.8
@@ -240,13 +276,23 @@ class TtsSession:
         mx.random.seed(self.seed)
 
         if tts_model.multi_speaker:
-            if isinstance(self.voice, Path):
-                voice_path = self.voice
+            if isinstance(self.voice, list):
+                # `voices=` multi-voice blend (RAV-1552): each entry is either
+                # already a resolved `Path` (the normal `tts/server.py` path)
+                # or a raw name to resolve here, exactly like the
+                # single-voice branch below.
+                voices = [
+                    entry if isinstance(entry, Path) else tts_model.get_voice_path(entry)
+                    for entry in self.voice
+                ]
+            elif isinstance(self.voice, Path):
+                voices = [self.voice]
             else:
-                voice_path = tts_model.get_voice_path(
-                    self.voice or "expresso/ex03-ex01_happy_001_channel1_334s.wav"
-                )
-            voices = [voice_path]
+                voices = [
+                    tts_model.get_voice_path(
+                        self.voice or "expresso/ex03-ex01_happy_001_channel1_334s.wav"
+                    )
+                ]
         else:
             voices = []
         cfg_coef_conditioning = self.bundle.cfg_coef_conditioning
@@ -381,8 +427,16 @@ class TtsSession:
             voice_tensor = voice_tensor.reshape(1, -1, voice_tensor.shape[-1])
             mask = mask.reshape(1, -1)
         except Exception as exc:
+            # `exc` is a third-party (`mlx`/`moshi_mlx`) exception -- e.g. an
+            # array-broadcast `ValueError` like "Cannot broadcast array of
+            # shape (2,1,3,2) into shape (1,1,3,2)" -- and must never reach a
+            # client verbatim (RAV-1552 F2; this used to interpolate `exc`
+            # directly into the message forwarded by `tts/server.py`). A
+            # fixed, generic message is used instead; the full detail is
+            # always logged server-side.
+            logger.exception("tts: voice embedding tensor construction failed")
             raise VoiceEmbeddingError(
-                f"could not build voice embedding tensor: {exc}"
+                "could not build voice embedding tensor"
             ) from exc
 
         from moshi_mlx.modules.conditioner import ConditionAttributes, TensorCondition
@@ -417,8 +471,13 @@ class TtsSession:
                 tts_model, attributes
             )
         except Exception as exc:
+            # Same rationale as the tensor-construction wrap above (RAV-1552
+            # F2): `exc` is a third-party exception and must never reach a
+            # client verbatim. A fixed, generic message is used instead; the
+            # full detail is always logged server-side.
+            logger.exception("tts: voice embedding conditioning failed")
             raise VoiceEmbeddingError(
-                f"could not apply voice embedding conditioning: {exc}"
+                "could not apply voice embedding conditioning"
             ) from exc
 
     def push_text(self, text: str) -> list[TtsStepEvent]:
@@ -489,7 +548,7 @@ class TtsSession:
         import mlx.core as mx
 
         if self.offset >= self.max_gen_length:
-            raise RuntimeError(
+            raise GenerationLengthLimitError(
                 f"reached max_gen_length={self.max_gen_length}; reconnect to start a fresh session"
             )
         tts_model = self.bundle.tts_model

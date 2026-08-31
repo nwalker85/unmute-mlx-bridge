@@ -50,7 +50,17 @@ javascript so we pass the token via the query too"* (`main.rs::streaming_t`,
 `asr_router::streaming_t`). An invalid or missing id gets **HTTP 401 before the
 WebSocket upgrade completes** — not a post-upgrade `Error` message. This bridge
 replicates that via `websockets`' `process_request` hook
-(`src/unmute_mlx_bridge/observability.py::build_process_request`).
+(`src/unmute_mlx_bridge/observability.py::build_process_request`,
+`check_auth`). A repeated `?auth_id=a&auth_id=b`, a blank `?auth_id=`, or a
+*blank-padded* repeat (`?auth_id=&auth_id=good`) is rejected fail-closed
+(401) here rather than silently taking the first value (RAV-1552) — this
+matters for TTS specifically, since `tts/server.py::_parse_query` also parses
+`auth_id` independently, post-upgrade; both checks treat a repeated or blank
+value the same way (invalid) so they can never disagree about a given query
+string. The blank-padded case requires parsing with `keep_blank_values=True`
+here too — the default `parse_qs` drops the blank half of the pair entirely,
+which used to make `?auth_id=&auth_id=good` look like the single value
+`good` to this gate.
 
 ## `GET /api/asr-streaming` — Speech-to-Text
 
@@ -98,7 +108,7 @@ gets an explicit `Error`, not silent data loss.
 | `EndWord` | `stop_time: f64` | Marks the end of the most recently emitted word (a silence/pad boundary was reached). |
 | `Marker` | `id: i64` | Echo of a client `Marker`, once due. |
 | `Step` | `step_idx: usize`, `prs: [f32]`, `buffered_pcm: usize` | One per processed audio frame. `prs` are the model's "extra head" softmax outputs (`asr.toml`'s `[modules.asr.model.extra_heads]`, `num_heads=4, dim=6`); Unmute uses `prs[2]` as its semantic-VAD pause-probability signal (`unmute/stt/speech_to_text.py::__aiter__`, `self.pause_prediction.update(dt=..., new_value=message.prs[2])`). `buffered_pcm` is a real-server implementation detail Unmute's client ignores (pydantic silently drops unknown fields); this bridge emits it as `0` for wire-shape fidelity. |
-| `Error` | `message: str` | Protocol/capacity/model errors. |
+| `Error` | `message: str` | Protocol/capacity/model errors. Never includes raw exception text — including a third-party (`mlx`/`moshi_mlx`/`huggingface_hub`) library's own exception text, e.g. an array-broadcast message or a disk-space `OSError` that embeds a local cache path — file/cache paths, hostnames, or other internal detail (RAV-1552 B1/F2). A client-supplied value that was successfully parsed but failed a subsequent validation (a voice name, a numeric `cfg_alpha=`) may be echoed back since the client already has it; a query value that could not even be *parsed* (e.g. `?seed=abc`) instead names only the parameter, never the unparsable raw text (RAV-1552 F1/F6). Anything from the underlying failure itself is logged server-side instead and replaced with a fixed, generic message. |
 
 ### Word/EndWord segmentation — the actual state machine
 
@@ -153,15 +163,17 @@ server defaults:
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `seed` | `u64` | `42` | |
-| `temperature` | `f64` | `0.8` | |
-| `top_k` | `usize` | `250` | |
-| `format` | enum | `OggOpus` | `Pcm \| PcmMessagePack \| OggOpus \| OggOpusMessagePack`. **This bridge implements `PcmMessagePack` only** — the only format Unmute's own client ever requests (`unmute/tts/text_to_speech.py::TtsStreamingQuery.format = "PcmMessagePack"`). Any other value gets an explicit `Error` and clean close, not silently-wrong framing. |
-| `voice` | `str?` | — | Voice file name, e.g. `expresso/ex03-ex01_happy_001_channel1_334s.wav`, resolved against the voice repo (`kyutai/tts-voices` by default). |
-| `voices` | `[str]?` | — | Multi-voice blend; mutually exclusive with `voice`. |
-| `max_seq_len` | `usize?` | — | |
-| `cfg_alpha` | `f64?` | — | |
-| `auth_id` | `str?` | — | See **Auth**, above. |
+| `seed` | `u64` | `42` | Rejected (`Error`) if negative — this bridge parses it as a signed Python `int`, unlike Rust's unsigned `u64`, so a negative value must be checked explicitly rather than relying on the parse itself to fail (RAV-1552). |
+| `temperature` | `f64` | `0.8` | Rejected (`Error`) if non-finite (`nan`/`inf`/`-inf`) or negative (RAV-1552) — `float()` parses all three without raising, so these need their own explicit range check, unlike a plain unparsable value. |
+| `top_k` | `usize` | `250` | Rejected (`Error`) if less than `1` (RAV-1552), for the same signed-`int`-vs-unsigned-`usize` reason as `seed`. |
+| `format` | enum | `OggOpus` | `Pcm \| PcmMessagePack \| OggOpus \| OggOpusMessagePack`. **This bridge implements `PcmMessagePack` only** — the only format Unmute's own client ever requests (`unmute/tts/text_to_speech.py::TtsStreamingQuery.format = "PcmMessagePack"`). Any other value gets an explicit `Error` and clean close, not silently-wrong framing. A repeated `?format=a&format=b`, a blank `?format=`, or a *blank-padded* repeat (`?format=&format=PcmMessagePack`) are all rejected as an explicit `Error` (RAV-1552) — this field previously took `values[0]` unconditionally, missing the repeated-value guard `seed=`/`top_k=`/`temperature=`/`cfg_alpha=`/`max_seq_len=`/`voice=` already had; the blank-padded case specifically survived a first fix for the plain-repeat case, because the repeat check ran on a parse that drops blank values entirely (see the `voices=` row's note on `keep_blank_values`), so the blank half of the pair silently vanished and left exactly one (non-blank) value behind. |
+| `voice` | `str?` | — | Voice file name, e.g. `expresso/ex03-ex01_happy_001_channel1_334s.wav`, resolved against the voice repo (`kyutai/tts-voices` by default). A blank value (`?voice=`) is rejected as an explicit `Error`, not treated as "not given" (RAV-1552 S1). |
+| `voices` | `[str]?` | — | Multi-voice blend (up to 5 entries; `moshi_mlx.models.tts.TTSModel.make_condition_attributes` only ever fills 5 speaker slots); mutually exclusive with `voice`. Giving both, an empty list, a blank entry (e.g. `?voices=`, or `?voices=&voices=a`), a duplicate entry (e.g. `?voices=a&voices=a` — burns a blend slot for no effect), more than 5 entries, or a name that fails to resolve is an explicit `Error`, never a silent drop (RAV-1552 S1: query-string parsing keeps blank values so a blank entry reaches this validation instead of being silently dropped, which used to fall back to the single default voice with no signal to the client — originally scoped to just `voice=`/`voices=`, now applied to every query field, RAV-1552). `?voice=&voices=a` (a blank `voice=` alongside a `voices=`) hits the *mutual-exclusivity* error, not the blank-`voice=` one — a `voice=` present on the wire at all, blank or not, counts as "given". **This bridge implements the blend even though the real `Py`/`py_module.rs` module referenced by stock Unmute's `tts.toml` does not** — see the known-deviations list below. |
+| `max_seq_len` | `usize?` | — | Rejected (`Error`) if less than `1` when given (RAV-1552), same reasoning as `top_k`. Also rejected (`Error`) if it exceeds the operator's configured `TTS_MAX_GEN_LENGTH` (RAV-1552): a client-supplied `max_seq_len=` may only *lower* the operator's cap for a session, never raise it — previously any positive value replaced the cap unbounded, so `?max_seq_len=1000000000` silently overrode operator capacity planning. |
+| `cfg_alpha` | `f64?` | — | Per-request classifier-free-guidance conditioning strength override. When omitted, the session falls back to this bridge's `TTS_CFG_COEF` config default (`2.0`, matching upstream `moshi-server`'s `tts.toml`; see the TOML shape below). Validated against the loaded model's `valid_cfg_conditionings` (`{1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0}` for `kyutai/tts-1.6b-en_fr`) *before* a channel slot is taken — same fail-fast shape as `format=` — so an unsupported value gets an `Error` and clean close with no `Ready` sent first (RAV-1552 B2; this used to reach `TtsSession` construction and crash the socket with 1011 and no `Error`). No separate positive/finite range check here (unlike `temperature`) — the model's own supported set is the authority. |
+| `auth_id` | `str?` | — | See **Auth**, above. A repeated `?auth_id=a&auth_id=b`, a blank `?auth_id=`, or a *blank-padded* repeat (`?auth_id=&auth_id=good`) is rejected both here (post-upgrade, as an explicit `Error`) and at the pre-upgrade auth gate (as HTTP 401) — the two checks are kept in lockstep so which one runs first can never change the outcome (RAV-1552; see **Auth**, above). Previously this field took `values[0]` unconditionally at both sites, and the blank-padded case survived even after that first fix, for the same `keep_blank_values` reason as `format=` above — confirmed live: `?auth_id=&auth_id=good` used to authorize against `{"good"}` at the gate, the exact query the post-upgrade parser already rejected. |
+
+Validation order (each stage fails fast with an `Error` and a clean close, no `Ready` sent first): unparsable, repeated (including blank-padded), blank (`format=`/`auth_id=` only), or out-of-range query values, including `max_seq_len=` above the operator's cap (RAV-1552 F1/F6; RAV-1552) → `format=` → `voice=`/`voices=` structural checks (pure and synchronous, so they run before the model is even loaded) → the model-loading gate (`"model still loading"`/`"model failed to load"`) → `cfg_alpha=` against the *loaded* model's supported set (RAV-1552 B2), which is why `cfg_alpha=` is validated last among these — it needs the model, unlike the others. Every one of these pre-`Ready` rejection paths in `handle_connection` increments `bridge_tts_rejected_sessions_total{reason=...}` (`reason` one of `query`, `format`, `voices`, `loading`, `cfg_alpha`) — see `docs/observability.md`. Each such rejection's `Error` send ignores `ConnectionClosed` (RAV-1552): a client that has already disconnected must not make `handle_connection` raise uncaught — the counter above still records the rejection either way.
 
 On connection, before any client message, the server sends:
 
@@ -192,7 +204,7 @@ message. This bridge accepts both for the same reason the real server does.
 | `Ready` | — | Sent once, on connect. |
 | `Audio` | `pcm: [f32]` | One Mimi frame (1920 samples @ 24kHz) of synthesized audio. |
 | `Text` | `text: str`, `start_s: f64`, `stop_s: f64` | Word-level timing. **Finalized one word late**: the real server's `MASK_WORD_FINISHED` "currently indicates the beginning of a new word rather than the end of one" (`rust/moshi-server/tts.py`'s own comment) — a word's `Text` event is only emitted once the *next* word starts being consumed, using that next word's step as `stop_s`. The very first `Text` message a real server emits is always the degenerate `{"type":"Text","text":"","start_s":0,"stop_s":0}` (an artifact of the state machine's initial empty entry); Unmute's client explicitly filters it out and so does not depend on it, and this bridge does not emit it. |
-| `Error` | `message: str` | Protocol/capacity/model/unsupported-format errors. |
+| `Error` | `message: str` | Protocol/capacity/model/unsupported-format errors. Same sanitization policy as the STT `Error` message above (RAV-1552 B1). |
 
 ### Word timing derivation
 
@@ -315,3 +327,21 @@ The TTS default remains `kyutai/tts-1.6b-en_fr`; its
 4. **`asr_delay_in_tokens` is derived, not hardcoded**, from the downloaded
    model's `config.json` rather than copied from the pinned TOML — see the
    Word/EndWord section above. They agree (`6`) for the current model.
+5. **`voices` (TTS multi-voice blend) is a documented superset over the real
+   `Py` module stock Unmute actually configures** (RAV-1552). At the pinned
+   `kyutai-labs/moshi@e6a55d2722a65870ef52a6c9f6ecfc0e90f38362`,
+   `rust/moshi-server/src/main.rs::TtsStreamingQuery` declares `voices:
+   Option<Vec<String>>` and it round-trips through `PyStreamingQuery`, but
+   `py_module.rs`'s own two `channels()` call sites
+   (`rust/moshi-server/src/py_module.rs:486`, `:547`) pass only
+   `query.voice.clone()` — `query.voices` is parsed and then silently
+   discarded, never reaching generation, in the module that stock Unmute's
+   `tts.toml` (`[modules.tts_py] type = "Py"`) actually wires up. A *different*
+   native module (`rust/moshi-server/src/tts.rs`, `type = "Tts"`, not
+   configured by stock Unmute) does fully implement `voices` via
+   `voice_ca_src(voice, voices)`, including the same mutual-exclusivity
+   validation this bridge now enforces. This bridge implements the blend
+   deliberately: `moshi_mlx.models.tts.TTSModel.make_condition_attributes`
+   already supports up to 5 voices natively, and this document's `voices` row
+   promised the behavior before this deviation was confirmed. Unobservable by
+   the pinned Unmute client, which never sends `voices=` itself.

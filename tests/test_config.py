@@ -77,3 +77,49 @@ def test_tts_rejects_non_positive_buffer_limits(monkeypatch, name, value):
 
     with pytest.raises(ValueError, match=name):
         TtsConfig.from_env()
+
+
+def test_tts_cfg_coef_defaults_to_upstream_toml_value(monkeypatch):
+    """Upstream `moshi-server`'s `tts.toml` ships `cfg_coef = 2.0`
+    (`[modules.tts_py.py]`); this bridge's engine used to hardcode `1.0`
+    instead, which renders voices nearly flat (RAV-1552)."""
+    monkeypatch.delenv("TTS_CFG_COEF", raising=False)
+
+    assert TtsConfig.from_env().cfg_coef == 2.0
+
+
+def test_tts_cfg_coef_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("TTS_CFG_COEF", "1.5")
+
+    assert TtsConfig.from_env().cfg_coef == 1.5
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "-1", "-0.5", "nan", "inf", "-inf"],
+)
+def test_tts_cfg_coef_rejects_non_positive_or_non_finite(monkeypatch, value):
+    """RAV-1552 B4: `TTS_CFG_COEF` must be a positive, finite number --
+    checked at config-parse time, before any Hugging Face download."""
+    monkeypatch.setenv("TTS_CFG_COEF", value)
+
+    with pytest.raises(ValueError, match="TTS_CFG_COEF"):
+        TtsConfig.from_env()
+
+
+def test_tts_cfg_coef_rejects_unparseable_value_and_names_the_variable(monkeypatch):
+    """RAV-1552 B4: `float("abc")` on its own never names the offending
+    environment variable; `_env_float` must attach it."""
+    monkeypatch.setenv("TTS_CFG_COEF", "not-a-number")
+
+    with pytest.raises(ValueError, match="TTS_CFG_COEF"):
+        TtsConfig.from_env()
+
+
+def test_tts_max_buffered_audio_seconds_unparseable_value_names_the_variable(monkeypatch):
+    """Same `_env_float` fix, exercised through the other float-typed env var
+    that uses it."""
+    monkeypatch.setenv("TTS_MAX_BUFFERED_AUDIO_SECONDS", "not-a-number")
+
+    with pytest.raises(ValueError, match="TTS_MAX_BUFFERED_AUDIO_SECONDS"):
+        TtsConfig.from_env()

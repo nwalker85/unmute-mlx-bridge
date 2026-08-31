@@ -56,6 +56,21 @@ PAD_TOKEN = 0
 WORD_BOUNDARY_TOKEN = 3
 
 
+class GenerationLengthLimitError(RuntimeError):
+    """Raised by `SttSession._step` when a session reaches its configured
+    `max_steps`. This is a legitimate terminal condition, not a crash -- the
+    client is expected to reconnect and start a fresh session -- so
+    `stt/server.py` reports it under its own `reason="length_limit"` metric
+    label and a dedicated, client-safe message, distinct from an unexpected
+    generation failure (`reason="generation"`). A dedicated exception class
+    (rather than matching the message text of a generic `RuntimeError`) keeps
+    that distinction from drifting if the message wording ever changes. Same
+    shape as `tts/engine.py::GenerationLengthLimitError`, kept as a separate
+    class per engine module rather than a shared one (see that module for the
+    rationale on module-local exception classes).
+    """
+
+
 @dataclass
 class SttStepEvent:
     """One protocol-relevant event produced by a single 1920-sample frame step."""
@@ -215,7 +230,7 @@ class SttSession:
         import mlx.core as mx
 
         if self.gen.step_idx >= self.gen.max_steps:
-            raise RuntimeError(
+            raise GenerationLengthLimitError(
                 f"reached max_steps={self.gen.max_steps}; reconnect to start a fresh session"
             )
 

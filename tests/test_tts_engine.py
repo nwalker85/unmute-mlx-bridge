@@ -90,6 +90,59 @@ def test_session_applies_seed_sampler_and_cfg_query_settings(monkeypatch):
     assert cfg_calls == [([], 1.5)]
 
 
+def _fake_multi_voice_bundle(cfg_calls, get_voice_path):
+    tts_model = SimpleNamespace(
+        lm=SimpleNamespace(
+            transformer_cache=[],
+            depformer_cache=[],
+            condition_provider=object(),
+        ),
+        mimi=SimpleNamespace(reset_all=lambda: None),
+        multi_speaker=True,
+        valid_cfg_conditionings=set(),
+        machine=SimpleNamespace(
+            new_state=lambda _entries: SimpleNamespace(
+                entries=[], end_step=None, transcript=[]
+            )
+        ),
+        make_condition_attributes=lambda voices, cfg: (
+            cfg_calls.append((voices, cfg))
+            or SimpleNamespace(text={}, tensor={})
+        ),
+        get_voice_path=get_voice_path,
+        temp=0.6,
+    )
+    return SimpleNamespace(tts_model=tts_model, cfg_coef_conditioning=None)
+
+
+def test_session_passes_multi_voice_blend_to_condition_attributes(monkeypatch):
+    """RAV-1552: a list `voice` (the resolved `voices=` blend) is passed
+    through to `make_condition_attributes` as-is for already-resolved `Path`
+    entries, and resolved via `get_voice_path` for any raw name -- mirroring
+    `moshi_mlx.models.tts.TTSModel.make_condition_attributes(voices: list[Path], ...)`.
+    """
+    _install_fake_generation_modules(monkeypatch)
+    cfg_calls = []
+    resolved_calls = []
+
+    def get_voice_path(name):
+        resolved_calls.append(name)
+        return Path(f"/voices/{name}.safetensors")
+
+    bundle = _fake_multi_voice_bundle(cfg_calls, get_voice_path)
+
+    tts_engine.TtsSession(
+        bundle=bundle,
+        voice=[Path("/voices/a.safetensors"), "b"],
+        max_gen_length=1000,
+    )
+
+    assert cfg_calls == [
+        ([Path("/voices/a.safetensors"), Path("/voices/b.safetensors")], None)
+    ]
+    assert resolved_calls == ["b"]
+
+
 def test_session_rejects_unsupported_cfg_before_generation(monkeypatch):
     _install_fake_generation_modules(monkeypatch)
     cfg_calls = []
@@ -207,6 +260,27 @@ def test_step_does_not_decode_frames_containing_zero_tokens(monkeypatch):
 
     assert events == []
     assert decode_calls == []
+
+
+def test_step_raises_generation_length_limit_error_at_max_gen_length(monkeypatch):
+    """RAV-1552 S2: reaching `max_gen_length` is a legitimate terminal
+    condition, not an unexpected crash -- it must raise the dedicated
+    `GenerationLengthLimitError`, not a bare `RuntimeError`, so
+    `tts/server.py` can report it under its own `reason="length_limit"`
+    metric label and message rather than lumping it in with
+    `reason="generation"`."""
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.int64 = np.int64
+    mlx_core.ones = np.ones
+    mlx_core.clip = np.clip
+    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+
+    session = object.__new__(tts_engine.TtsSession)
+    session.max_gen_length = 100
+    session.offset = 100
+
+    with pytest.raises(tts_engine.GenerationLengthLimitError, match="max_gen_length=100"):
+        session._step()
 
 
 def _install_fake_apply_voice_modules(monkeypatch):
@@ -417,7 +491,67 @@ def test_apply_voice_embedding_wraps_unexpected_tensor_errors(monkeypatch):
         session.apply_voice_embedding([1.0, 2.0, 3.0, 4.0], [1, 2, 2])
 
 
-def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_path: Path):
+def test_apply_voice_embedding_never_forwards_tensor_construction_exception_text(
+    monkeypatch,
+):
+    """RAV-1552 F2: the underlying (third-party `mlx`/`moshi_mlx`) exception's
+    own text -- which can carry arbitrary detail, e.g. a real `mlx` array-
+    broadcast failure reading 'Cannot broadcast array of shape (2,1,3,2) into
+    shape (1,1,3,2)' -- must never reach `VoiceEmbeddingError`'s message. Only
+    a fixed, generic message does. Injects a distinctive marker string via a
+    failing `mx.zeros` to prove it never surfaces, regardless of what the
+    real exception's text happens to say.
+    """
+    _install_fake_apply_voice_modules(monkeypatch)
+    session, _captured = _fake_apply_voice_session()
+
+    marker = "distinctive-tensor-build-failure-marker-77c2d0"
+
+    def _raise_marker(*_args, **_kwargs):
+        raise RuntimeError(marker)
+
+    monkeypatch.setattr(sys.modules["mlx.core"], "zeros", _raise_marker)
+
+    with pytest.raises(
+        tts_engine.VoiceEmbeddingError,
+        match="could not build voice embedding tensor",
+    ) as exc_info:
+        session.apply_voice_embedding([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [1, 3, 2])
+
+    assert marker not in str(exc_info.value)
+
+
+def test_apply_voice_embedding_never_forwards_conditioning_exception_text(monkeypatch):
+    """RAV-1552 F2: same contract as the tensor-construction wrap above, for
+    the second `mlx`/`moshi_mlx`-dependent step (`_condition_tensors_from_
+    attributes`, called after tensor construction succeeds)."""
+    _install_fake_apply_voice_modules(monkeypatch)
+    session, _captured = _fake_apply_voice_session()
+
+    marker = "distinctive-conditioning-failure-marker-93af1c"
+
+    def _raise_marker(_key, _value):
+        raise RuntimeError(marker)
+
+    session.bundle.tts_model.lm.condition_provider.condition_tensor = _raise_marker
+
+    with pytest.raises(
+        tts_engine.VoiceEmbeddingError,
+        match="could not apply voice embedding conditioning",
+    ) as exc_info:
+        session.apply_voice_embedding([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [1, 3, 2])
+
+    assert marker not in str(exc_info.value)
+
+
+def _install_fake_bundle_load_modules(
+    monkeypatch, tmp_path: Path, *, valid_cfg_conditionings: set[float] | None = None
+):
+    """Installs the minimal fake `mlx`/`moshi_mlx` module tree that lets
+    `TtsModelBundle.load` run without real MLX or model weights, mirroring
+    this file's existing mocking style. Returns the `FakeTtsModel` class so
+    callers can inspect the `cfg_coef` it was constructed with.
+    """
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
@@ -452,12 +586,15 @@ def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_pa
         def load_pytorch_weights(self, _path, strict):
             assert strict is True
 
+    constructed: list[FakeTtsModel] = []
+
     class FakeTtsModel:
-        def __init__(self, _lm, _mimi, _tokenizer, *, n_q=32, **_kwargs):
+        def __init__(self, _lm, _mimi, _tokenizer, *, n_q=32, cfg_coef=1.0, **_kwargs):
             self.n_q = n_q
-            self.valid_cfg_conditionings = set()
-            self.cfg_coef = 1.0
+            self.valid_cfg_conditionings = valid_cfg_conditionings or set()
+            self.cfg_coef = cfg_coef
             self.machine = SimpleNamespace(new_state=lambda _entries: object())
+            constructed.append(self)
 
     mlx_package = types.ModuleType("mlx")
     mlx_package.__path__ = []
@@ -506,6 +643,11 @@ def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_pa
         "SentencePieceProcessor",
         lambda _path: object(),
     )
+    return constructed
+
+
+def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_path: Path):
+    _install_fake_bundle_load_modules(monkeypatch, tmp_path)
 
     bundle = tts_engine.TtsModelBundle.load(
         "kyutai/tts-1.6b-en_fr",
@@ -514,3 +656,82 @@ def test_model_bundle_applies_requested_audio_codebook_depth(monkeypatch, tmp_pa
     )
 
     assert bundle.tts_model.n_q == 24
+
+
+def test_model_bundle_defaults_cfg_coef_to_upstream_toml_value(monkeypatch, tmp_path: Path):
+    """RAV-1552: the engine used to hardcode `cfg_coef=1.0` at model load,
+    which flattens voice conditioning; `TtsModelBundle.load`'s own default
+    must now match upstream `moshi-server`'s `tts.toml` (`cfg_coef = 2.0`)."""
+    _install_fake_bundle_load_modules(
+        monkeypatch, tmp_path, valid_cfg_conditionings={1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0}
+    )
+
+    bundle = tts_engine.TtsModelBundle.load(
+        "kyutai/tts-1.6b-en_fr",
+        quantize_bits=None,
+        n_q=24,
+    )
+
+    assert bundle.cfg_coef_conditioning == 2.0
+    # The live classifier-free-guidance pass stays disabled; cfg is applied
+    # via conditioning instead (matches tts_mlx.py).
+    assert bundle.tts_model.cfg_coef == 1.0
+
+
+def test_model_bundle_forwards_explicit_cfg_coef(monkeypatch, tmp_path: Path):
+    _install_fake_bundle_load_modules(
+        monkeypatch, tmp_path, valid_cfg_conditionings={1.0, 1.5, 2.0}
+    )
+
+    bundle = tts_engine.TtsModelBundle.load(
+        "kyutai/tts-1.6b-en_fr",
+        quantize_bits=None,
+        n_q=24,
+        cfg_coef=1.5,
+    )
+
+    assert bundle.cfg_coef_conditioning == 1.5
+
+
+def test_model_bundle_rejects_unsupported_cfg_coef_at_load(monkeypatch, tmp_path: Path):
+    """An unsupported `cfg_coef` must fail loudly at startup (not silently
+    clamp or fall back), and the error must name the valid set."""
+    _install_fake_bundle_load_modules(
+        monkeypatch, tmp_path, valid_cfg_conditionings={1.0, 1.5, 2.0}
+    )
+
+    with pytest.raises(ValueError, match=r"unsupported cfg_coef.*1\.0.*1\.5.*2\.0"):
+        tts_engine.TtsModelBundle.load(
+            "kyutai/tts-1.6b-en_fr",
+            quantize_bits=None,
+            n_q=24,
+            cfg_coef=1.75,
+        )
+
+
+def test_model_bundle_skips_cfg_validation_for_non_distilled_model(
+    monkeypatch, tmp_path: Path
+):
+    """A model with no `valid_cfg_conditionings` (not CFG-distilled) keeps the
+    prior behaviour: `cfg_coef_conditioning` stays `None`, and any `cfg_coef`
+    value is accepted rather than rejected."""
+    _install_fake_bundle_load_modules(monkeypatch, tmp_path, valid_cfg_conditionings=set())
+
+    bundle = tts_engine.TtsModelBundle.load(
+        "kyutai/tts-1.6b-en_fr",
+        quantize_bits=None,
+        n_q=24,
+        cfg_coef=99.0,
+    )
+
+    assert bundle.cfg_coef_conditioning is None
+    # RAV-1552 S4 regression: `tts_model.cfg_coef` must always be reset to
+    # 1.0 after load, not only inside the `if valid_cfg_conditionings:`
+    # branch. Before this fix, a non-distilled model kept whatever
+    # `cfg_coef` the constructor received (here `99.0`) -- `TTSModel.
+    # generate`/`LmGen.step` reads this every step to decide whether to
+    # double the batch for a live classifier-free-guidance pass, so this
+    # would have silently doubled batch size/compute on every generation
+    # step instead of ever applying cfg (which this bridge does not
+    # implement a live CFG pass for on a non-distilled model at all).
+    assert bundle.tts_model.cfg_coef == 1.0

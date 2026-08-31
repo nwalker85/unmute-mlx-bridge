@@ -6,6 +6,7 @@ Follows the same `@dataclass(frozen=True)` + `from_env()` convention used by
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Literal, cast
@@ -22,7 +23,17 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     value = os.getenv(name)
-    return float(value) if value else default
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        # `float("abc")` on its own raises `ValueError: could not convert
+        # string to float: 'abc'`, which never names the offending
+        # environment variable -- surfaced as-is, an operator debugging a bad
+        # deploy config sees an error with no idea which of several env vars
+        # is malformed (RAV-1552).
+        raise ValueError(f"{name} must be a valid float, got {value!r}") from exc
 
 
 def _env_optional_int(name: str) -> int | None:
@@ -106,6 +117,19 @@ class TtsConfig:
     log_level: str
     log_format: LogFormat = "text"
     n_q: int = 24
+    cfg_coef: float = 2.0
+    """Session-default classifier-free-guidance conditioning strength, applied
+    when a client omits the per-query ``cfg_alpha`` override.
+
+    Defaults to ``2.0``, matching upstream `moshi-server`'s `tts.toml`
+    (``[modules.tts_py.py] cfg_coef = 2.0``). Production Unmute itself passes
+    ``cfg_alpha=1.5`` (`unmute/tts/voices.py`). The engine's own hardcoded
+    ``1.0`` predecessor renders voices nearly flat and was never an upstream
+    value. Validated at model-load time against the loaded model's
+    ``valid_cfg_conditionings`` (see ``tts/engine.py::TtsModelBundle.load``);
+    an unsupported value fails loudly at startup rather than silently
+    clamping.
+    """
     delivery_mode: TtsDeliveryMode = "streaming"
     max_buffered_chars: int = 4096
     max_buffered_audio_seconds: float = 60.0
@@ -140,6 +164,24 @@ class TtsConfig:
             raise ValueError(
                 "TTS_MAX_BUFFERED_AUDIO_SECONDS must be positive"
             )
+        cfg_coef = _env_float("TTS_CFG_COEF", 2.0)
+        if not math.isfinite(cfg_coef) or cfg_coef <= 0:
+            # Cheap, model-independent validation that can run before any
+            # Hugging Face download: this only rejects a structurally
+            # nonsensical value (NaN/inf/<=0). Whether `cfg_coef` is one of
+            # the *specific* values this model supports still requires the
+            # loaded model's `valid_cfg_conditionings`
+            # (`tts/engine.py::TtsModelBundle.load`) -- deriving that set
+            # from the model's small `config.json` alone, before downloading
+            # weights, was investigated and is not done in this change; see
+            # the RAV-1552 report for why (`valid_cfg_conditionings` reads
+            # off the loaded `Lm`'s condition provider, and reordering the
+            # download/construction sequence in `TtsModelBundle.load` to
+            # validate before the heavy weight downloads could not be
+            # verified against real MLX weights in this environment).
+            raise ValueError(
+                f"TTS_CFG_COEF must be a positive finite number, got {cfg_coef}"
+            )
         return cls(
             host=os.getenv("TTS_HOST", "127.0.0.1"),
             port=_env_int("TTS_PORT", 8089),
@@ -156,6 +198,7 @@ class TtsConfig:
             log_level=os.getenv("TTS_LOG_LEVEL", "INFO"),
             log_format=cast(LogFormat, os.getenv("TTS_LOG_FORMAT", "text")),
             n_q=_env_int("TTS_N_Q", 24),
+            cfg_coef=cfg_coef,
             delivery_mode=cast(TtsDeliveryMode, delivery_mode),
             max_buffered_chars=max_buffered_chars,
             max_buffered_audio_seconds=max_buffered_audio_seconds,

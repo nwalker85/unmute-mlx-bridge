@@ -13,6 +13,10 @@ permissions:
 jobs:
   test:
     runs-on: unmute-mlx-bridge
+    # Bounds a hung test (e.g. a receive loop with no client-side timeout
+    # waiting on a fix that was reverted) to a finite CI run instead of a
+    # queued job that never completes (RAV-1552 S3).
+    timeout-minutes: 15
     steps:
       # actions/checkout v6.0.2
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd

@@ -45,6 +45,27 @@ compatibility or version labels.
   Apple Silicon hardware tests remain opt-in. `.github/workflows/ci.yml` now
   targets a GitHub-hosted runner (`ubuntu-latest`) by default; see
   `docs/repo-intake.md` for the current CI lane decision.
+- TTS `Voice` protocol message (RAV-1504): a custom cloned-voice embedding may
+  now condition a session at session start, before any `Text` message, as an
+  alternative to the `voice=`/`voices=` query parameters — matching real
+  `moshi-server`'s `py_module.rs::InMsg::Voice`. A `Voice` message arriving
+  after generation has started is rejected with an explicit protocol `Error`
+  (a deliberate, stricter-than-upstream deviation; see PROTOCOL.md).
+- TTS `voices=` multi-voice blend (RAV-1552): up to 5 repeated `voices=` query
+  parameters resolve and blend distinct voices, mirroring the real `Py`
+  module's `voice_ca_src` (which the pinned Unmute client never itself
+  exercises). Mutually exclusive with `voice=`.
+- `bridge_tts_streaming_failures_total{reason=...}` and
+  `bridge_stt_generation_failures_total{reason=...}` metrics (RAV-1552),
+  labeled `generation` (unexpected model failure) or `length_limit` (the
+  session reached its configured `max_gen_length`/`max_steps` — a legitimate
+  terminal condition, distinct from a crash).
+- `bridge_tts_rejected_sessions_total{reason=...}` and
+  `bridge_stt_rejected_sessions_total{reason=...}` metrics (RAV-1552):
+  every pre-`Ready` rejection path in each server's `handle_connection` now
+  increments a labelled counter (TTS: `query`, `format`, `voices`, `loading`,
+  `cfg_alpha`; STT: `loading`), not just `cfg_alpha` as before. See
+  `docs/observability.md`.
 
 ### Fixed
 
@@ -64,6 +85,112 @@ compatibility or version labels.
   macOS-only `mlx-metal` backend package, so it cannot resolve on Linux at all.
   This matches the design spec's own requirement that MLX imports stay behind
   explicit adapter construction so the portable suite runs on Linux CI.
+- `TTS_CFG_COEF` now defaults to `2.0` (matching upstream `moshi-server`'s
+  `tts.toml`), not the engine's previous hardcoded `1.0`, which rendered
+  synthesized voices nearly flat (RAV-1552). Validated as a positive, finite
+  number at config-parse time (naming the variable in the error, unlike a
+  bare `float()` parse failure); the loaded model's specific supported set is
+  still checked at model load / per-request `cfg_alpha=`.
+- Streaming-mode (TTS) and per-frame (STT) generation failures during an
+  active session now emit a protocol `Error` and close cleanly instead of an
+  abrupt, uncaught-exception close with no `Error` (RAV-1552). This covers
+  both TTS delivery modes' trailing-flush paths and STT's per-Audio-frame
+  path.
+- Adversarial-review hardening (RAV-1552), ahead of this repo going public as
+  a drop-in `moshi-server` replacement:
+  - No client-visible `Error` message ever includes raw exception text, file/
+    cache paths, or hostnames again. An unresolvable `voice=`/`voices=` entry
+    now names only the client-supplied voice; a malformed frame, an
+    unexpected `Voice`-embedding failure, and unexpected `TtsSession`
+    construction failures all get a fully generic message instead. The full
+    detail is always logged server-side.
+  - `TtsSession.apply_voice_embedding`'s two `mlx`/`moshi_mlx`-dependent
+    steps (tensor construction and conditioning) no longer interpolate the
+    underlying third-party exception's own text into `VoiceEmbeddingError`
+    (RAV-1552 F2) — a tensor-build failure could previously reach the client
+    verbatim, e.g. `mlx`'s own "Cannot broadcast array of shape (2,1,3,2)
+    into shape (1,1,3,2)". Both now raise a fixed, generic message; the
+    detail is still logged server-side.
+  - A non-numeric or repeated TTS query value (`?seed=abc`, `?cfg_alpha=1&
+    cfg_alpha=2`, `?voice=a&voice=b`, …) now gets a protocol `Error` naming
+    only the parameter, and a clean close, before `Ready` is ever sent
+    (RAV-1552 F1/F6) — `_parse_query`'s bare `int()`/`float()` calls used to
+    run outside every `try` in `handle_connection`, so an unparsable numeric
+    value crashed the socket with 1011 and no `Error`; a repeated value
+    silently took only the first occurrence with no signal to the client at
+    all.
+  - An unsupported `cfg_alpha=` now gets a protocol `Error` (naming the valid
+    set) and a clean close, validated before a channel slot is even taken —
+    it previously reached `TtsSession` construction uncaught, killing the
+    socket with 1011 and no `Error`.
+  - A single unresolvable `voice=` now gets the same `Error` treatment as an
+    unresolvable `voices=` blend entry — it previously reached a bare
+    `voice_resolution.result()` uncaught, with the same 1011 failure mode.
+  - `voice=`/`voices=` query-string parsing now keeps blank values instead of
+    silently dropping them: a blank `?voices=` used to fall back to the
+    single default voice with no signal to the client at all. Blank entries
+    and duplicate entries in `voices=` are now explicit protocol errors.
+  - `TtsModelBundle.load` now resets the live classifier-free-guidance pass
+    (`tts_model.cfg_coef`) to `1.0` unconditionally, not only for a
+    CFG-distilled model — a non-distilled model previously kept whatever
+    `cfg_coef` the constructor received (e.g. the config-default `2.0`),
+    silently doubling batch size/compute on every generation step.
+  - `stt/server.py`'s per-frame exception handling now excludes
+    `ConnectionClosed` from its generic failure branch, matching the TTS call
+    sites' existing symmetry (defense in depth; not a fix for an observed
+    crash).
+  - A client connecting after model load has actually failed now gets
+    `"model failed to load"` instead of `"model still loading"` forever; the
+    process still stays up serving health probes (`/readyz`'s
+    `model_load_error` field) rather than exiting — see README.md's "If model
+    load fails" section for the documented rationale.
+  - Both CI workflows (`.forgejo/workflows/ci.yml`, `.github/workflows/
+    ci.yml`) now set `timeout-minutes` so a hung test (this PR's own
+    regression-tested `voices=` unresolvable-name conformance test hung,
+    rather than failed, when its fix was reverted) bounds the job instead of
+    queuing forever.
+  - A repeated `?format=a&format=b` or `?auth_id=a&auth_id=b` TTS query value
+    is now rejected the same way `seed=`/`top_k=`/`temperature=`/`cfg_alpha=`/
+    `max_seq_len=`/`voice=` already were (RAV-1552): `_parse_query` previously
+    took `raw[field_name][0]` unconditionally for these two fields, silently
+    dropping any repeat with no signal to the client — the same F6
+    silent-drop failure mode, just missed for these two. `observability.py::
+    check_auth`'s pre-upgrade `auth_id=` gate gets the matching fix (fail
+    closed on a repeat, instead of `values[0]`), so the gate and the
+    post-upgrade parser can never disagree about whether a given `auth_id=`
+    query string is acceptable.
+  - A syntactically valid but out-of-range TTS numeric query value — a
+    negative `seed`, a `top_k`/`max_seq_len` of zero or less, or a
+    non-finite (`nan`/`inf`) or negative `temperature` — is now rejected with
+    an explicit `Error` naming only the parameter (RAV-1552), the same
+    fail-fast shape as an unparsable value. These previously parsed
+    successfully and reached `TtsSession`/the underlying sampler unchecked.
+    `cfg_alpha=` is unaffected — it is range-checked separately, against the
+    loaded model's actual supported set.
+  - A *blank-padded* repeat (`?format=&format=PcmMessagePack`, `?auth_id=&
+    auth_id=good`, `?seed=&seed=7`, `?max_seq_len=&max_seq_len=5`, …) used to
+    bypass the repeated-value guard added above (RAV-1552), confirmed live
+    against the real `TtsServer`: `_parse_query`'s repeat-count checks ran on
+    `parse_qs`'s default (blank-dropping) parse, so the blank entry vanished
+    before `len(values) != 1` ever saw it, leaving exactly one surviving
+    value and silently sending `Ready` instead of rejecting. Every query
+    field is now parsed with blank values kept (previously scoped to just
+    `voice=`/`voices=`, RAV-1552 S1), and a lone blank `format=`/`auth_id=`
+    is rejected explicitly (there is no parse step for these two to fail on
+    an empty string, unlike the numeric fields). `observability.py::
+    check_auth`'s pre-upgrade gate gets the same `keep_blank_values=True`
+    fix — it used to authorize `?auth_id=&auth_id=good` against an allowed
+    id, the exact query `_parse_query` already rejected post-upgrade.
+  - A client-supplied `max_seq_len=` can no longer raise the operator's
+    configured `TTS_MAX_GEN_LENGTH` cap, only lower it (RAV-1552):
+    `?max_seq_len=1000000000` previously replaced the cap unbounded. Rejected
+    with an explicit `Error` the same way any other out-of-range value is.
+  - Every pre-`Ready` rejection branch in `handle_connection` (both servers)
+    now ignores `ConnectionClosed` when sending its `Error` (RAV-1552): a
+    client that disconnects on its own between the upgrade and the rejection
+    used to make that `send` raise uncaught, propagating out of
+    `handle_connection` with no clean close — the metric increment (see
+    above) still records the rejection either way.
 
 ### Known limitations
 

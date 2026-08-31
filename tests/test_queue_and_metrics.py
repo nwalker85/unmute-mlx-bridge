@@ -78,6 +78,43 @@ async def _recv(ws) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Model-load-failure client messaging (RAV-1552 B4)
+# ---------------------------------------------------------------------------
+
+
+async def test_model_still_loading_message_before_any_load_failure():
+    """`load_model` is never called here, so `bundle` stays `None` and
+    `health.model_load_error` stays `None` -- a connecting client must see
+    "model still loading", not "model failed to load"."""
+    config = _make_stt_config()
+    server = SttServer(config, bundle_loader=lambda: FakeBundle(), session_cls=FakeSession)
+    pr = build_process_request(server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids)
+    async with serve(server.handle_connection, config.host, config.port, process_request=pr) as ws:
+        port = ws.sockets[0].getsockname()[1]
+        async with await _connect(port) as conn:
+            message = await asyncio.wait_for(_recv(conn), timeout=5)
+            assert message == {"type": "Error", "message": "model still loading"}
+
+
+async def test_model_failed_to_load_message_after_load_failure():
+    """Once `health.mark_load_failed` has actually recorded a failure (real
+    `load_model` calls this on any load exception), a connecting client must
+    see "model failed to load", not the misleading "model still loading"
+    forever (RAV-1552 B4: the process stays up serving health probes -- see
+    README.md's "If model load fails" section -- but the client-facing
+    message must match reality)."""
+    config = _make_stt_config()
+    server = SttServer(config, bundle_loader=lambda: FakeBundle(), session_cls=FakeSession)
+    server.health.mark_load_failed("model load failed, see logs")
+    pr = build_process_request(server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids)
+    async with serve(server.handle_connection, config.host, config.port, process_request=pr) as ws:
+        port = ws.sockets[0].getsockname()[1]
+        async with await _connect(port) as conn:
+            message = await asyncio.wait_for(_recv(conn), timeout=5)
+            assert message == {"type": "Error", "message": "model failed to load"}
+
+
+# ---------------------------------------------------------------------------
 # inference_step_seconds fix
 # ---------------------------------------------------------------------------
 

@@ -166,6 +166,7 @@ independent `conversation_id` values.
 | `bridge_stt_inference_frames_active` | Frames in the current active `push_audio` call. `0` = idle, `N` = inference running. **Not** the websockets receive-queue depth. |
 | `bridge_stt_recv_queue_bound` | Configured `max_queue` for the websockets receive queue (set at startup from `STT_MAX_RECV_QUEUE`, default 1024). This is the ceiling for the internal websockets backlog; not directly observable as a live depth. |
 | `bridge_stt_oversized_frames_total` | Audio frames rejected for exceeding `STT_MAX_INPUT_FRAME_SAMPLES`. |
+| `bridge_stt_generation_failures_total{reason}` | `push_audio` raised. Emitted with an `Error` protocol message and a clean close, never an abrupt disconnect (RAV-1552). `reason` label distinguishes `generation` (unexpected model failure) and `length_limit` (the session hit its configured `max_steps` — a legitimate terminal condition, not a crash). |
 | `bridge_inference_step_seconds` | Per-frame inference wall time (push_audio batch / frame count). |
 | `bridge_inference_step_rtf` | Real-time factor per batch (inference_s / audio_s). |
 
@@ -173,6 +174,42 @@ The websockets library's internal receive queue is bounded by `STT_MAX_RECV_QUEU
 (passed as `max_queue` to `websockets.serve`). Its live depth is not exposed to
 application code. `bridge_stt_inference_frames_active` accurately describes what IS
 observable: the number of frames being processed in the current call.
+
+---
+
+## TTS Generation Failure Metrics
+
+Both TTS delivery modes report a distinct counter so a dashboard can tell "a
+turn failed mid-generation" apart from a client disconnect or an input/output
+limit rejection. Neither counter's `Error` message interpolates the causing
+exception's text — only a generic, sanitized message reaches the client; the
+real exception goes to the server log via `logger.exception`.
+
+| Metric | Delivery mode | Notes |
+|--------|---------------|-------|
+| `bridge_tts_streaming_failures_total{reason}` | `streaming` | A session's generator (`TtsSession.stream_text`/`stream_eos`) raised while `_emit_stream` was draining it. Before RAV-1552 this propagated uncaught past `handle_connection`'s `except (ConnectionClosed, _ClientDisconnected):` and closed the socket abruptly with no protocol `Error`. Client disconnect (`_ClientDisconnected`) and `ConnectionClosed` are re-raised, not counted here. `reason` label distinguishes `generation` (session's generator raised) and `length_limit` (session hit its configured `max_gen_length` — a legitimate terminal condition, not a crash). |
+| `bridge_tts_buffered_turn_failures_total{reason}` | `buffered_turn` | `reason` label distinguishes `generation` (session raised), `length_limit` (session hit its configured `max_gen_length`), `input_limit` (`TTS_MAX_BUFFERED_CHARS` exceeded), `output_limit` (`TTS_MAX_BUFFERED_AUDIO_SECONDS` exceeded), and `disconnect` (client left before `Eos`). |
+
+---
+
+## Pre-`Ready` Rejection Metrics
+
+Before RAV-1552, only one of `handle_connection`'s pre-`Ready` rejection paths
+(TTS's `cfg_alpha=` check) incremented any metric at all — a client that
+disconnected on its own and one rejected for a malformed query, an
+unsupported `format=`, a bad `voices=` blend, or a not-yet-loaded model were
+all equally invisible to a dashboard. Every pre-`Ready` rejection path in
+`handle_connection`, in both servers, now increments a labelled counter, so
+an operator can tell these apart. ("No free channels" already had its own
+counter, `bridge_rejected_sessions_total`, and keeps it — it is not part of
+this metric. The pre-*upgrade* HTTP 401 auth gate, `check_auth` in
+`build_process_request`, is a separate mechanism entirely — it runs before
+`handle_connection` is ever invoked and increments no metric of its own.)
+
+| Metric | Server | `reason` values | Notes |
+|--------|--------|------------------|-------|
+| `bridge_tts_rejected_sessions_total{reason}` | TTS | `query`, `format`, `voices`, `loading`, `cfg_alpha` | `query`: `_parse_query` raised `_QueryError` — unparsable, repeated (including blank-padded, e.g. `?seed=&seed=7`), blank (`format=`/`auth_id=` only), or out-of-range (including `max_seq_len=` above the operator's configured `TTS_MAX_GEN_LENGTH` cap). `format`: `format=` isn't `PcmMessagePack`. `voices`: `_voices_query_error` rejected the `voice=`/`voices=` combination. `loading`: the model isn't loaded yet (or failed to load). `cfg_alpha`: an unsupported `cfg_alpha=` against the loaded model's supported set — previously the only reason with a metric at all, via the unlabelled `bridge_protocol_errors_total` counter; it no longer touches that counter. |
+| `bridge_stt_rejected_sessions_total{reason}` | STT | `loading` | Mirrors the TTS `loading` reason above — STT's `handle_connection` has no query-string, format, or voice validation of its own. |
 
 ---
 

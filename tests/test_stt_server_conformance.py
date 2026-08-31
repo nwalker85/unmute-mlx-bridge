@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import msgpack
 import pytest
@@ -20,7 +21,7 @@ from websockets.asyncio.server import serve
 
 from unmute_mlx_bridge.config import SttConfig
 from unmute_mlx_bridge.observability import build_process_request
-from unmute_mlx_bridge.stt.engine import SttStepEvent
+from unmute_mlx_bridge.stt.engine import GenerationLengthLimitError, SttStepEvent
 from unmute_mlx_bridge.stt.server import PROTOCOL_PATH, SttServer
 
 
@@ -98,6 +99,14 @@ async def _recv_message(ws) -> dict:
     return msgpack.unpackb(raw)
 
 
+async def _recv_bounded(ws, timeout: float = 5) -> dict:
+    """Like `_recv_message`, but bounded (RAV-1552 F4): a regression that
+    makes the server stop replying must fail this test, not hang it forever.
+    """
+    raw = await asyncio.wait_for(ws.recv(decode=False), timeout=timeout)
+    return msgpack.unpackb(raw)
+
+
 async def test_connect_receives_ready(stt_server):
     _server, port = stt_server
     async with await _connect(port) as ws:
@@ -131,17 +140,198 @@ async def test_marker_is_echoed_after_delay(stt_server):
         assert "Marker" in seen_types
 
 
+#: Stands in for detail a pydantic `ValidationError`/msgpack-unpack failure
+#: could otherwise embed in its own text -- mirrors `test_tts_server_
+#: conformance.py`'s malformed-frame tests, which pin the same "fully
+#: generic 'malformed frame' message, nothing else" contract (RAV-1552 B1/F5).
+_INJECTED_DETAIL_TEXT = "private-parse-detail-9f3c1a"
+
+
 async def test_malformed_frame_gets_error_and_stays_connected(stt_server):
     _server, port = stt_server
     async with await _connect(port) as ws:
         await _recv_message(ws)  # Ready
-        await ws.send(msgpack.packb({"type": "NotARealType"}))
-        error = await _recv_message(ws)
-        assert error["type"] == "Error"
+        await ws.send(
+            msgpack.packb({"type": "NotARealType", "detail": _INJECTED_DETAIL_TEXT})
+        )
+        error = await _recv_bounded(ws)
+        assert error == {"type": "Error", "message": "malformed frame"}
+        assert _INJECTED_DETAIL_TEXT not in error["message"]
         # Connection must still be usable afterwards.
         await ws.send(msgpack.packb({"type": "Audio", "pcm": [0.0] * 1920}))
-        step = await _recv_message(ws)
+        step = await _recv_bounded(ws)
         assert step["type"] == "Step"
+
+
+async def test_generation_failure_emits_error_then_closes():
+    """RAV-1552: `push_audio` runs directly on the per-message path (no
+    generator boundary to cross, unlike TTS's streaming/buffered turns), so a
+    generation exception used to propagate straight out of `_run_session`,
+    uncaught by `handle_connection`'s `except ConnectionClosed:` -- an
+    abrupt close with no protocol `Error`. It must now emit a sanitized
+    `Error` (no internal exception text) and then close cleanly.
+    """
+
+    @dataclass
+    class FailingSession:
+        bundle: object
+        max_steps: int
+
+        def push_marker(self, marker_id: int) -> None:
+            pass
+
+        def push_audio(self, pcm: list[float]) -> list[SttStepEvent]:
+            raise RuntimeError("private model failure detail")
+
+    config = SttConfig(
+        host="127.0.0.1",
+        port=0,
+        hf_repo="unused",
+        quantize_bits=None,
+        max_steps=1000,
+        asr_delay_in_tokens=1,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+    )
+    server = SttServer(config, bundle_loader=lambda: FakeBundle(), session_cls=FailingSession)
+    await server.load_model()
+    process_request = build_process_request(
+        server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids
+    )
+    async with serve(
+        server.handle_connection, config.host, config.port, process_request=process_request
+    ) as ws_server:
+        port = ws_server.sockets[0].getsockname()[1]
+        async with await _connect(port) as ws:
+            assert await _recv_bounded(ws) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Audio", "pcm": [0.0] * 1920}))
+            error = await _recv_bounded(ws)
+            assert error["type"] == "Error"
+            assert "private model failure detail" not in error["message"]
+            with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                await asyncio.wait_for(ws.recv(), timeout=0.2)
+
+    assert (
+        server.metrics.stt_generation_failures.labels(reason="generation")._value.get()
+        == 1
+    )
+
+
+async def test_length_limit_failure_gets_dedicated_error_and_metric():
+    """RAV-1552 S2: a session hitting its configured `max_steps` is a
+    legitimate terminal condition, not a generation failure -- it must get
+    its own message and its own `reason="length_limit"` metric label,
+    distinct from `reason="generation"`."""
+
+    @dataclass
+    class LengthLimitedSession:
+        bundle: object
+        max_steps: int
+
+        def push_marker(self, marker_id: int) -> None:
+            pass
+
+        def push_audio(self, pcm: list[float]) -> list[SttStepEvent]:
+            raise GenerationLengthLimitError(
+                "reached max_steps=1000; reconnect to start a fresh session"
+            )
+
+    config = SttConfig(
+        host="127.0.0.1",
+        port=0,
+        hf_repo="unused",
+        quantize_bits=None,
+        max_steps=1000,
+        asr_delay_in_tokens=1,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+    )
+    server = SttServer(config, bundle_loader=lambda: FakeBundle(), session_cls=LengthLimitedSession)
+    await server.load_model()
+    process_request = build_process_request(
+        server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids
+    )
+    async with serve(
+        server.handle_connection, config.host, config.port, process_request=process_request
+    ) as ws_server:
+        port = ws_server.sockets[0].getsockname()[1]
+        async with await _connect(port) as ws:
+            assert await asyncio.wait_for(_recv_message(ws), timeout=5) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Audio", "pcm": [0.0] * 1920}))
+            error = await asyncio.wait_for(_recv_message(ws), timeout=5)
+            assert error["type"] == "Error"
+            assert "length limit" in error["message"]
+            assert "reconnect" in error["message"]
+            with pytest.raises(websockets.exceptions.ConnectionClosedOK):
+                await asyncio.wait_for(ws.recv(), timeout=5)
+
+    assert (
+        server.metrics.stt_generation_failures.labels(reason="length_limit")._value.get()
+        == 1
+    )
+    assert (
+        server.metrics.stt_generation_failures.labels(reason="generation")._value.get()
+        == 0
+    )
+
+
+async def test_push_audio_connection_closed_is_not_swallowed_as_generation_failure():
+    """RAV-1552 S5: `push_audio`'s exception handling must not swallow
+    `ConnectionClosed` into the generic `except Exception:` branch, unlike
+    the pre-existing TTS call sites, which already exclude it. It must
+    propagate to `handle_connection`'s own `except ConnectionClosed:`
+    (counted as a cancellation), never miscounted as a generation failure.
+    `push_audio` itself has no reason to actually raise this in production;
+    this is defense in depth, not a fix for an observed crash.
+    """
+
+    @dataclass
+    class ConnectionClosedSession:
+        bundle: object
+        max_steps: int
+
+        def push_marker(self, marker_id: int) -> None:
+            pass
+
+        def push_audio(self, pcm: list[float]) -> list[SttStepEvent]:
+            raise websockets.exceptions.ConnectionClosed(None, None)
+
+    config = SttConfig(
+        host="127.0.0.1",
+        port=0,
+        hf_repo="unused",
+        quantize_bits=None,
+        max_steps=1000,
+        asr_delay_in_tokens=1,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+    )
+    server = SttServer(
+        config, bundle_loader=lambda: FakeBundle(), session_cls=ConnectionClosedSession
+    )
+    await server.load_model()
+    process_request = build_process_request(
+        server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids
+    )
+    async with serve(
+        server.handle_connection, config.host, config.port, process_request=process_request
+    ) as ws_server:
+        port = ws_server.sockets[0].getsockname()[1]
+        async with await _connect(port) as ws:
+            assert await asyncio.wait_for(_recv_message(ws), timeout=5) == {"type": "Ready"}
+            await ws.send(msgpack.packb({"type": "Audio", "pcm": [0.0] * 1920}))
+            async with asyncio.timeout(2):
+                while server.metrics.cancellations._value.get() < 1:
+                    await asyncio.sleep(0)
+
+    assert (
+        server.metrics.stt_generation_failures.labels(reason="generation")._value.get()
+        == 0
+    )
+    assert (
+        server.metrics.stt_generation_failures.labels(reason="length_limit")._value.get()
+        == 0
+    )
 
 
 async def test_second_concurrent_session_is_rejected(stt_server):
@@ -177,3 +367,75 @@ async def test_unauthorized_connection_is_rejected_before_upgrade(stt_server):
     with pytest.raises(websockets.exceptions.InvalidStatus) as exc_info:
         await websockets.connect(f"ws://127.0.0.1:{port}{PROTOCOL_PATH}")
     assert exc_info.value.response.status_code == 401
+
+
+async def test_model_still_loading_is_a_counted_pre_ready_rejection():
+    """RAV-1552: mirrors `tts/server.py`'s `tts_rejected_sessions_by_reason`
+    fix -- STT's `handle_connection` has exactly one pre-Ready rejection path
+    that previously emitted no metric at all (the "still loading"/"failed to
+    load" gate; "no free channels" already had its own `rejected_sessions`
+    counter). `load_model` is never called here, so `bundle` stays `None`."""
+    config = SttConfig(
+        host="127.0.0.1",
+        port=0,
+        hf_repo="unused",
+        quantize_bits=None,
+        max_steps=1000,
+        asr_delay_in_tokens=1,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+    )
+    server = SttServer(config, bundle_loader=lambda: FakeBundle(), session_cls=FakeSession)
+    process_request = build_process_request(
+        server.health, server.metrics, PROTOCOL_PATH, config.authorized_ids
+    )
+    async with serve(
+        server.handle_connection, config.host, config.port, process_request=process_request
+    ) as ws_server:
+        port = ws_server.sockets[0].getsockname()[1]
+        async with await _connect(port) as ws:
+            message = await asyncio.wait_for(_recv_message(ws), timeout=5)
+            assert message == {"type": "Error", "message": "model still loading"}
+
+    assert server.metrics.stt_rejected_sessions_by_reason.labels(reason="loading")._value.get() == 1
+
+
+async def test_loading_rejection_send_ignores_connection_closed():
+    """RAV-1552: mirrors `tts/server.py`'s equivalent pin -- STT's "still
+    loading" pre-`Ready` rejection sent its `Error` unguarded; a client that
+    disconnects on its own between the upgrade and the rejection makes
+    `connection.send` raise `ConnectionClosed`, which used to propagate
+    straight out of `handle_connection` uncaught. `_send_rejection` must
+    swallow it."""
+
+    class _AlreadyGoneConnection:
+        def __init__(self) -> None:
+            self.request = SimpleNamespace(path=PROTOCOL_PATH, headers={})
+            self.closed = False
+
+        async def send(self, _data: object) -> None:
+            raise websockets.exceptions.ConnectionClosed(None, None)
+
+        async def close(self) -> None:
+            self.closed = True
+
+    config = SttConfig(
+        host="127.0.0.1",
+        port=0,
+        hf_repo="unused",
+        quantize_bits=None,
+        max_steps=1000,
+        asr_delay_in_tokens=1,
+        authorized_ids=frozenset({"public_token"}),
+        log_level="INFO",
+    )
+    server = SttServer(config, bundle_loader=lambda: FakeBundle(), session_cls=FakeSession)
+    connection = _AlreadyGoneConnection()
+
+    # Must not raise, despite `send` always raising `ConnectionClosed`.
+    # `load_model` is never called, so `bundle` stays `None` and this hits
+    # the "still loading" branch.
+    await server.handle_connection(connection)
+
+    assert connection.closed is True
+    assert server.metrics.stt_rejected_sessions_by_reason.labels(reason="loading")._value.get() == 1

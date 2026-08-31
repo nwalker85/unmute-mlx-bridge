@@ -692,12 +692,28 @@ class Metrics:
     stt_inference_frames_active: Gauge = field(init=False)
     stt_recv_queue_bound: Gauge = field(init=False)
     stt_oversized_frames_total: Counter = field(init=False)
+    stt_generation_failures: Counter = field(init=False)
     # --- buffered TTS metrics ---
     buffered_input_characters: Histogram = field(init=False)
     buffered_audio_seconds: Histogram = field(init=False)
     buffered_synthesis_seconds: Histogram = field(init=False)
     buffered_eos_to_first_emit_seconds: Histogram = field(init=False)
     buffered_turn_failures: Counter = field(init=False)
+    streaming_failures: Counter = field(init=False)
+    # --- pre-Ready rejection metrics ---
+    # Split by service (RAV-1552): `rejected_sessions` above already counts
+    # the one pre-Ready rejection that had a metric ("no free channels"); the
+    # rest of each server's `handle_connection` pre-`Ready` rejection paths
+    # (a malformed/repeated query, `format=`, `voices=`, "still loading"/
+    # "failed to load", TTS's `cfg_alpha=`) previously emitted no metric at
+    # all -- an operator could not tell these apart from silent client
+    # abandonment on a dashboard. Every `Metrics` instance carries both
+    # fields regardless of which server constructs it (see this class's own
+    # docstring), matching the existing split between e.g.
+    # `stt_generation_failures` and `streaming_failures`/
+    # `buffered_turn_failures`.
+    tts_rejected_sessions_by_reason: Counter = field(init=False)
+    stt_rejected_sessions_by_reason: Counter = field(init=False)
 
     def __post_init__(self) -> None:
         self.model_load_seconds = Gauge(
@@ -770,6 +786,12 @@ class Metrics:
             "STT audio frames rejected because they exceed the configured sample limit",
             registry=self.registry,
         )
+        self.stt_generation_failures = Counter(
+            "bridge_stt_generation_failures_total",
+            "STT generation failures by reason",
+            labelnames=("reason",),
+            registry=self.registry,
+        )
         self.buffered_input_characters = Histogram(
             "bridge_tts_buffered_input_characters",
             "Characters retained for one buffered TTS turn",
@@ -796,19 +818,56 @@ class Metrics:
             labelnames=("reason",),
             registry=self.registry,
         )
+        self.streaming_failures = Counter(
+            "bridge_tts_streaming_failures_total",
+            "Streaming-mode TTS turn failures by reason",
+            labelnames=("reason",),
+            registry=self.registry,
+        )
+        self.tts_rejected_sessions_by_reason = Counter(
+            "bridge_tts_rejected_sessions_total",
+            "TTS sessions rejected before Ready, by reason",
+            labelnames=("reason",),
+            registry=self.registry,
+        )
+        self.stt_rejected_sessions_by_reason = Counter(
+            "bridge_stt_rejected_sessions_total",
+            "STT sessions rejected before Ready, by reason",
+            labelnames=("reason",),
+            registry=self.registry,
+        )
 
 
 def check_auth(request: Request, authorized_ids: frozenset[str]) -> bool:
-    """Replicates `main.rs`'s auth precedence: header first, then `auth_id` query param."""
+    """Replicates `main.rs`'s auth precedence: header first, then `auth_id` query param.
+
+    A repeated (e.g. `?auth_id=good&auth_id=bad`) or blank (`?auth_id=`, alone
+    or padding a repeat: `?auth_id=&auth_id=good`) `auth_id=` is rejected here,
+    fail-closed, rather than silently taking the first value (RAV-1552): this
+    gate runs *before* the WebSocket upgrade, and `tts/server.py::_parse_query`
+    runs its own, independent `auth_id=` parse *after* the upgrade with the
+    same "repeated or blank is invalid" rule (see its comment). Taking
+    `values[0]` here while the post-upgrade parser rejects any repeat would
+    let this gate's verdict depend on which of two repeated values happens to
+    come first -- the gate and the parser must never be able to disagree
+    about whether a given `auth_id=` query string is acceptable. This
+    requires parsing with `keep_blank_values=True` (RAV-1552): the default
+    `parse_qs` drops a blank value entirely, which used to make
+    `?auth_id=&auth_id=good` look like the single, non-repeated value
+    `good` here -- silently authorizing a query string this gate was already
+    trying to reject.
+    """
     if not authorized_ids:
         # An explicitly empty allow-list means auth is disabled (loopback dev default).
         return True
     header_value = request.headers.get(ID_HEADER)
     if header_value is not None:
         return header_value in authorized_ids
-    query = parse_qs(urlsplit(request.path).query)
-    auth_id = query.get("auth_id", [None])[0]
-    return auth_id is not None and auth_id in authorized_ids
+    query = parse_qs(urlsplit(request.path).query, keep_blank_values=True)
+    auth_id_values = query.get("auth_id")
+    if auth_id_values is None or len(auth_id_values) != 1 or auth_id_values[0] == "":
+        return False
+    return auth_id_values[0] in authorized_ids
 
 
 def build_process_request(

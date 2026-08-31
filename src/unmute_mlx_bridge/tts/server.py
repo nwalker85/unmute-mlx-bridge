@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -48,7 +49,13 @@ from unmute_mlx_bridge.protocol.tts import (
     TtsVoiceMessage,
 )
 from unmute_mlx_bridge.protocol.wire import pack_message, unpack_message
-from unmute_mlx_bridge.tts.engine import TtsModelBundle, TtsSession, TtsStepEvent
+from unmute_mlx_bridge.tts.engine import (
+    GenerationLengthLimitError,
+    TtsModelBundle,
+    TtsSession,
+    TtsStepEvent,
+    VoiceEmbeddingError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +68,42 @@ class _ClientDisconnected(Exception):
 
 class _BufferedAudioLimitExceeded(Exception):
     """Internal signal that buffered PCM exceeded its configured bound."""
+
+
+class _QueryError(Exception):
+    """Raised by `_parse_query` when a query parameter cannot be parsed into
+    its expected type (e.g. `?seed=abc`), or is repeated where only a single
+    value is accepted (e.g. `?voice=a&voice=b`) (RAV-1552 F1/F6). Carries
+    only the parameter *name* -- never the raw value or the underlying
+    `ValueError`, neither of which is safe to forward to a client verbatim.
+
+    `handle_connection` catches this before `Ready` is ever sent and reports
+    it as an explicit protocol `Error` naming only the parameter, then closes
+    -- the same fail-fast shape as every other pre-Ready validation failure
+    (`format=`, `voice=`/`voices=` structural checks, `cfg_alpha=`), instead
+    of letting a bare `int()`/`float()` `ValueError` propagate out of
+    `_parse_query` uncaught and kill the socket with 1011 and no `Error`.
+    """
+
+    def __init__(self, param_name: str) -> None:
+        self.param_name = param_name
+        super().__init__(f"invalid query parameter: {param_name}")
+
+
+class _VoiceResolutionError(Exception):
+    """Raised by `_resolve_voice`/`_resolve_voice_list` when the configured
+    voice resolver fails for a client-supplied voice name. Carries only that
+    (client-supplied, safe) name in its message -- never the underlying
+    resolver exception, which may embed operator-specific details (e.g.
+    `huggingface_hub`'s disk-space `OSError` embeds the local cache path,
+    including the operator's username) that must never reach a client
+    (RAV-1552 B1/B3). The full original exception is always logged via
+    `logger.exception` at the point of failure, before this is raised.
+    """
+
+    def __init__(self, voice_name: str) -> None:
+        self.voice_name = voice_name
+        super().__init__(f"unresolvable voice: {voice_name}")
 
 
 def _next_event(events: Iterator[TtsStepEvent]) -> TtsStepEvent | None:
@@ -86,23 +129,224 @@ def _consume_background_voice_result(task: asyncio.Task[object]) -> None:
         logger.warning("tts: background voice resolution failed", exc_info=True)
 
 
-def _parse_query(path: str) -> TtsStreamingQuery:
-    raw = parse_qs(urlsplit(path).query)
+async def _send_rejection(connection: ServerConnection, message: TtsErrorMessage) -> None:
+    """Send a pre-`Ready` rejection `Error`, ignoring `ConnectionClosed` (RAV-1552):
+    every `handle_connection` pre-`Ready` rejection branch (`query`, `format`,
+    `voices`, `loading`, `cfg_alpha`) sent its `Error` unguarded -- a client that
+    disconnected on its own between the upgrade and this rejection made `send`
+    raise `ConnectionClosed`, which propagated straight out of `handle_connection`
+    uncaught (the same 1011-with-no-`Error` failure mode this whole rejection path
+    exists to avoid, just triggered by the *client* leaving instead of a bug). The
+    metric increment always happens before this call, so the rejection is still
+    recorded even when the `Error` itself can no longer be delivered.
+    """
+    try:
+        await connection.send(pack_message(message))
+    except ConnectionClosed:
+        pass
+
+
+def _parse_query(path: str, max_seq_len_cap: int | None = None) -> TtsStreamingQuery:
+    query_string = urlsplit(path).query
+    # Every field is parsed with blank values kept (RAV-1552): `parse_qs`'s
+    # default `keep_blank_values=False` drops a blank value entirely, as if
+    # the parameter had never been given at all. Originally this was scoped
+    # to just `voice=`/`voices=` (RAV-1552 S1) via a second, separate parse
+    # (`raw_voice_fields`) -- every other field still used the
+    # blank-dropping default. That silently defeated every "must be exactly
+    # one value" guard below for a *blank-padded* repeat: `?format=&
+    # format=PcmMessagePack`, `?auth_id=&auth_id=good`, `?seed=&seed=7`, and
+    # `?max_seq_len=&max_seq_len=5` all had their blank entry dropped before
+    # `len(values) != 1` ever saw it, leaving exactly one (the non-blank)
+    # value -- so the request was silently accepted (`Ready` sent) instead
+    # of rejected, the exact silent-drop failure mode this guard exists to
+    # stop. Applied uniformly now; `raw_voice_fields` is gone, `raw` is the
+    # single source of truth for every field.
+    raw = parse_qs(query_string, keep_blank_values=True)
     kwargs: dict[str, object] = {}
-    for field_name in ("seed", "top_k"):
+    # A non-numeric value (`?seed=abc`) or a repeated occurrence of one of
+    # these scalar parameters (`?seed=1&seed=2`) both raise `_QueryError`
+    # here (RAV-1552 F1/F6): a bare `int()`/`float()` `ValueError` used to
+    # propagate out of this function uncaught, and a repeated value used to
+    # silently take only `values[0]` and drop the rest with no signal to the
+    # client -- neither is caught anywhere before `handle_connection` sends
+    # `Ready`, so both used to either crash the socket with 1011 and no
+    # `Error`, or (for the repeat case) never surface at all. A lone blank
+    # value (`?seed=`) fails the same way a non-numeric one does: `int("")`/
+    # `float("")` both raise `ValueError`, so no separate check is needed
+    # here for the numeric fields specifically.
+    #
+    # Each field also gets an explicit range check once it parses (RAV-1552):
+    # a syntactically valid but out-of-range value (a negative `seed`, a
+    # `top_k`/`max_seq_len` of zero or less, a non-finite or negative
+    # `temperature`) used to reach `TtsSession`/the underlying sampler
+    # unchecked instead of failing fast here like every other malformed
+    # value. `cfg_alpha` is deliberately excluded from range checking here --
+    # it is range-checked separately, against the *loaded model's* actual
+    # supported set, by `_cfg_alpha_query_error` below. `max_seq_len` also
+    # gets an upper-bound check against `max_seq_len_cap` (the operator's
+    # configured `TTS_MAX_GEN_LENGTH`, passed in by `handle_connection`) so a
+    # client-supplied override can only *lower* the operator's cap, never
+    # raise it (RAV-1552) -- previously any positive value replaced the cap
+    # unbounded.
+    for field_name in ("seed", "top_k", "max_seq_len"):
         if field_name in raw:
-            kwargs[field_name] = int(raw[field_name][0])
+            values = raw[field_name]
+            if len(values) != 1:
+                raise _QueryError(field_name)
+            try:
+                parsed_int = int(values[0])
+            except ValueError:
+                raise _QueryError(field_name) from None
+            if field_name == "seed" and parsed_int < 0:
+                raise _QueryError(field_name)
+            if field_name in ("top_k", "max_seq_len") and parsed_int < 1:
+                raise _QueryError(field_name)
+            if (
+                field_name == "max_seq_len"
+                and max_seq_len_cap is not None
+                and parsed_int > max_seq_len_cap
+            ):
+                raise _QueryError(field_name)
+            kwargs[field_name] = parsed_int
     for field_name in ("temperature", "cfg_alpha"):
         if field_name in raw:
-            kwargs[field_name] = float(raw[field_name][0])
-    for field_name in ("format", "voice", "auth_id"):
+            values = raw[field_name]
+            if len(values) != 1:
+                raise _QueryError(field_name)
+            try:
+                parsed_float = float(values[0])
+            except ValueError:
+                raise _QueryError(field_name) from None
+            if field_name == "temperature" and not (
+                math.isfinite(parsed_float) and parsed_float >= 0
+            ):
+                raise _QueryError(field_name)
+            kwargs[field_name] = parsed_float
+    # `format`/`auth_id` get the same repeated-value guard as the scalar
+    # numeric fields above (RAV-1552): a repeated `?format=a&format=b` or
+    # `?auth_id=a&auth_id=b` used to silently take `values[0]` and drop the
+    # rest, exactly the F6 silent-drop failure mode the numeric fields and
+    # `voice=` were already fixed for -- these two were missed. Unlike the
+    # numeric fields, a lone blank value (`?format=`) needs its own explicit
+    # check -- there is no parse step here to fail on an empty string, so it
+    # is rejected the same way a blank `voice=` already is (RAV-1552 S1).
+    # See `observability.py::check_auth` for the matching pre-handshake
+    # guard on a repeated or blank `auth_id=`, so the gate and this parser
+    # can never disagree about whether one is acceptable.
+    for field_name in ("format", "auth_id"):
         if field_name in raw:
-            kwargs[field_name] = raw[field_name][0]
-    if "max_seq_len" in raw:
-        kwargs["max_seq_len"] = int(raw["max_seq_len"][0])
+            values = raw[field_name]
+            if len(values) != 1:
+                raise _QueryError(field_name)
+            if values[0] == "":
+                raise _QueryError(field_name)
+            kwargs[field_name] = values[0]
+    if "voice" in raw:
+        voice_values = raw["voice"]
+        if len(voice_values) != 1:
+            # `?voice=a&voice=b` used to silently take `voice_values[0]` and
+            # drop `b` with no signal to the client (RAV-1552 F6).
+            raise _QueryError("voice")
+        kwargs["voice"] = voice_values[0]
     if "voices" in raw:
         kwargs["voices"] = raw["voices"]
     return TtsStreamingQuery(**kwargs)  # type: ignore[arg-type]
+
+
+#: `moshi_mlx.models.tts.TTSModel.make_condition_attributes` only ever fills
+#: 5 speaker slots (`for idx in range(5)`); a 6th `voices=` entry would be
+#: silently dropped by the model rather than rejected, so this bridge
+#: enforces the limit explicitly instead.
+MAX_VOICES_BLEND = 5
+
+#: Client-facing message for `tts.engine.GenerationLengthLimitError` (RAV-1552
+#: S2): a session hitting its configured `max_gen_length` is a legitimate
+#: terminal condition, not a generation failure, so it gets its own message
+#: (and its own `reason="length_limit"` metric label at each call site) rather
+#: than the generic "TTS generation failed"/"buffered TTS generation failed".
+_LENGTH_LIMIT_MESSAGE = "session length limit reached; reconnect to start a fresh session"
+
+
+def _voices_query_error(query: TtsStreamingQuery) -> str | None:
+    """Structural validation of `voice=`/`voices=` query parameters -- pure and
+    synchronous, so it can reject a malformed request before a channel slot
+    or model resolution is ever committed to it (same fail-fast shape as the
+    `format=` check). Never validates whether a *name* resolves -- that
+    requires the (possibly blocking, HF-fetching) voice resolver, handled
+    separately once a session's channel slot is held; see
+    `TtsServer._run_session_inner`.
+
+    A blank `voice=`/`voices=` entry is rejected explicitly (RAV-1552 S1;
+    see `_parse_query`, which parses these two fields with blank values kept
+    so they reach here instead of being silently dropped). The mutual-
+    exclusivity check runs first and deliberately treats a *blank* `voice=`
+    as "given": `?voice=&voices=a` hits `"cannot specify both..."` rather
+    than the blank-voice message below -- a `voice=` present on the wire at
+    all, blank or not, is a value the client actually sent. This is a
+    documented choice among two defensible options (see PROTOCOL.md); the
+    other would have been to reject the blank `voice=` on its own regardless
+    of `voices=`.
+    """
+    if query.voice is not None and query.voices is not None:
+        return "cannot specify both 'voice' and 'voices' query parameters"
+    if query.voice == "":
+        return "'voice' query parameter must not be blank"
+    if query.voices is not None:
+        if len(query.voices) == 0:
+            return "'voices' query parameter must not be empty"
+        if any(voice == "" for voice in query.voices):
+            return "'voices' query parameter must not contain blank entries"
+        if len(set(query.voices)) != len(query.voices):
+            # Duplicates burn a blend slot for no effect: `make_condition_
+            # attributes` only ever fills `MAX_VOICES_BLEND` speaker slots,
+            # so `voices=a&voices=a` silently wastes one of the 5 available
+            # slots instead of blending a second distinct voice.
+            return "'voices' query parameter must not contain duplicate entries"
+        if len(query.voices) > MAX_VOICES_BLEND:
+            return (
+                f"'voices' supports at most {MAX_VOICES_BLEND} entries, "
+                f"got {len(query.voices)}"
+            )
+    return None
+
+
+def _cfg_alpha_query_error(bundle: object, query: TtsStreamingQuery) -> str | None:
+    """Structural validation of `cfg_alpha=` against the *loaded model's*
+    supported set -- run once the bundle is loaded but before a channel slot
+    is committed (same fail-fast shape as `_voices_query_error`), so an
+    unsupported `cfg_alpha` never reaches `TtsSession` construction
+    (RAV-1552 B2; `TtsSession.__post_init__` raising `ValueError` there used
+    to propagate out of `asyncio.to_thread` uncaught, closing the socket with
+    1011 and no protocol `Error`).
+
+    `bundle` is typed `object` (rather than `TtsModelBundle`) because the
+    portable conformance suite's `FakeBundle` test doubles carry no
+    `tts_model` at all -- `getattr` defensively no-ops for those, matching
+    the pre-existing behavior of never validating `cfg_alpha` when the
+    model's supported set cannot be determined.
+    """
+    if query.cfg_alpha is None:
+        return None
+    tts_model = getattr(bundle, "tts_model", None)
+    valid_cfg_conditionings = getattr(tts_model, "valid_cfg_conditionings", None)
+    if not valid_cfg_conditionings:
+        return None
+    if query.cfg_alpha not in valid_cfg_conditionings:
+        return (
+            f"unsupported cfg_alpha {query.cfg_alpha}; expected one of "
+            f"{sorted(valid_cfg_conditionings)}"
+        )
+    return None
+
+
+def _voice_label(config: TtsConfig, query: TtsStreamingQuery) -> str:
+    """Human-readable voice identifier for logging/span attributes only --
+    never used for resolution (see `_run_session_inner`, which resolves
+    `voice`/`voices` through separate, dedicated code paths)."""
+    if query.voices is not None:
+        return ",".join(query.voices)
+    return query.voice or config.default_voice
 
 
 def _event_to_message(event: TtsStepEvent):
@@ -137,6 +381,7 @@ class TtsServer:
                 config.voice_repo,
                 config.quantize_bits,
                 n_q=config.n_q,
+                cfg_coef=config.cfg_coef,
             )
         )
         self._session_cls = session_cls
@@ -156,7 +401,44 @@ class TtsServer:
         # clients waiting on this lock can cancel without queuing thread work.
         async with self._voice_resolution_lock:
             started.set()
-            return await asyncio.to_thread(self._voice_resolver, bundle, voice)
+            try:
+                return await asyncio.to_thread(self._voice_resolver, bundle, voice)
+            except Exception:
+                # The resolver's own exception (e.g. `huggingface_hub`'s
+                # disk-space `OSError`, which embeds the local cache path
+                # including the operator's username) must never reach a
+                # client (RAV-1552 B1/B3). Log it in full here; the caller
+                # only ever sees the client-supplied voice name.
+                logger.exception("tts: voice resolution failed for %r", voice)
+                raise _VoiceResolutionError(voice) from None
+
+    async def _resolve_voice_list(
+        self,
+        bundle: TtsModelBundle,
+        voices: list[str],
+        started: asyncio.Event,
+    ) -> list[str | Path | None]:
+        """Resolves every entry of a `voices=` multi-voice blend through the
+        same voice resolver `_resolve_voice` uses for a single `voice=`, one
+        at a time, under the same single-resolver lock (so a multi-voice
+        resolution still serializes against any other connection's voice
+        resolution). An unresolvable entry raises `_VoiceResolutionError`
+        (named for the specific entry that failed) from here and is caught
+        by the caller (`TtsServer._run_session_inner`), which reports it as
+        an explicit protocol `Error` -- never a silent drop.
+        """
+        async with self._voice_resolution_lock:
+            started.set()
+            resolved: list[str | Path | None] = []
+            for voice in voices:
+                try:
+                    resolved.append(
+                        await asyncio.to_thread(self._voice_resolver, bundle, voice)
+                    )
+                except Exception:
+                    logger.exception("tts: voice resolution failed for %r", voice)
+                    raise _VoiceResolutionError(voice) from None
+            return resolved
 
     async def _abandon_voice_resolution(
         self,
@@ -194,18 +476,70 @@ class TtsServer:
             raise
 
     async def handle_connection(self, connection: ServerConnection) -> None:
-        query = _parse_query(connection.request.path if connection.request else "")
+        try:
+            query = _parse_query(
+                connection.request.path if connection.request else "",
+                self.config.max_gen_length,
+            )
+        except _QueryError as exc:
+            # A malformed or repeated query value (RAV-1552 F1/F6) is the
+            # very first thing validated, before `format=`, before the model
+            # load check -- same fail-fast shape as every other pre-Ready
+            # validation failure. Only the parameter name is ever named,
+            # never the raw value or the underlying `ValueError` text.
+            self.metrics.tts_rejected_sessions_by_reason.labels(reason="query").inc()
+            await _send_rejection(
+                connection,
+                TtsErrorMessage(message=f"invalid '{exc.param_name}' query parameter"),
+            )
+            await connection.close()
+            return
 
         if query.format != SUPPORTED_FORMAT:
             error_message = (
                 f"unsupported format {query.format!r}; only {SUPPORTED_FORMAT} is implemented"
             )
-            await connection.send(pack_message(TtsErrorMessage(message=error_message)))
+            self.metrics.tts_rejected_sessions_by_reason.labels(reason="format").inc()
+            await _send_rejection(connection, TtsErrorMessage(message=error_message))
+            await connection.close()
+            return
+
+        voices_error = _voices_query_error(query)
+        if voices_error is not None:
+            self.metrics.tts_rejected_sessions_by_reason.labels(reason="voices").inc()
+            await _send_rejection(connection, TtsErrorMessage(message=voices_error))
             await connection.close()
             return
 
         if self.bundle is None:
-            await connection.send(pack_message(TtsErrorMessage(message="model still loading")))
+            # Distinguish "still loading" from "load already failed"
+            # (RAV-1552 B4): `model_load_error` is only ever set once
+            # `load_model` has actually failed (see `ServiceHealth.
+            # mark_load_failed`), so a client connecting after that point
+            # gets a message that matches reality instead of "still loading"
+            # forever. See README.md's "If model load fails" section for the
+            # documented rationale for staying up and serving health probes
+            # rather than exiting.
+            self.metrics.tts_rejected_sessions_by_reason.labels(reason="loading").inc()
+            if self.health.model_load_error is not None:
+                await _send_rejection(
+                    connection, TtsErrorMessage(message="model failed to load")
+                )
+            else:
+                await _send_rejection(
+                    connection, TtsErrorMessage(message="model still loading")
+                )
+            await connection.close()
+            return
+
+        cfg_alpha_error = _cfg_alpha_query_error(self.bundle, query)
+        if cfg_alpha_error is not None:
+            # Previously the only pre-Ready rejection path with a metric at
+            # all (via `protocol_errors`); now uses the same labelled
+            # `tts_rejected_sessions_by_reason` counter as every other path
+            # above, for one consistent place to look (RAV-1552).
+            self.metrics.tts_rejected_sessions_by_reason.labels(reason="cfg_alpha").inc()
+            await _send_rejection(connection, TtsErrorMessage(message=cfg_alpha_error))
             await connection.close()
             return
 
@@ -228,7 +562,7 @@ class TtsServer:
 
     async def _run_session(self, connection: ServerConnection, query: TtsStreamingQuery) -> None:
         assert self.bundle is not None
-        voice = query.voice or self.config.default_voice
+        voice = _voice_label(self.config, query)
 
         # Prefer the client-supplied session ID for cross-repo correlation.
         client_sid = extract_client_session_id(connection.request.headers) if connection.request else None
@@ -259,7 +593,7 @@ class TtsServer:
         ctx: CorrelationContext,
     ) -> None:
         assert self.bundle is not None
-        voice = query.voice or self.config.default_voice
+        voice = _voice_label(self.config, query)
         await connection.send(pack_message(TtsReadyMessage()))
         logger.info(
             "tts: session started",
@@ -279,9 +613,18 @@ class TtsServer:
         # itself doesn't mutate shared MLX generation state, so a disconnected
         # client can abandon that task and release the sole channel immediately.
         resolution_started = asyncio.Event()
-        voice_resolution = asyncio.create_task(
-            self._resolve_voice(self.bundle, voice, resolution_started)
-        )
+        is_multi_voice = query.voices is not None
+        if is_multi_voice:
+            assert query.voices is not None
+            voice_resolution = asyncio.create_task(
+                self._resolve_voice_list(self.bundle, query.voices, resolution_started)
+            )
+        else:
+            voice_resolution = asyncio.create_task(
+                self._resolve_voice(
+                    self.bundle, query.voice or self.config.default_voice, resolution_started
+                )
+            )
         connection_closed = asyncio.create_task(connection.wait_closed())
         try:
             try:
@@ -299,7 +642,23 @@ class TtsServer:
                     voice_resolution, resolution_started
                 )
                 raise _ClientDisconnected
-            resolved_voice = voice_resolution.result()
+            # Single- and multi-voice resolution now share identical
+            # exception handling (RAV-1552 B1/B3): both `_resolve_voice` and
+            # `_resolve_voice_list` wrap any resolver failure in
+            # `_VoiceResolutionError`, naming only the client-supplied voice
+            # that failed -- never the underlying resolver exception (which
+            # may embed operator-specific details, e.g. `huggingface_hub`'s
+            # disk-space `OSError` embeds the local cache path including the
+            # operator's username). An unresolvable voice, single or blended,
+            # must be an explicit protocol Error, never a silent drop or an
+            # abrupt/crashed close.
+            try:
+                resolved_voice: object = voice_resolution.result()
+            except _VoiceResolutionError as exc:
+                self.metrics.protocol_errors.inc()
+                await connection.send(pack_message(TtsErrorMessage(message=str(exc))))
+                await connection.close()
+                return
         finally:
             connection_closed.cancel()
             try:
@@ -309,20 +668,39 @@ class TtsServer:
 
         # Construction resets shared MLX caches, so unlike voice resolution it
         # must finish while this connection still owns the single-session lock.
-        session = await asyncio.to_thread(
-            self._session_cls,
-            bundle=self.bundle,
-            voice=resolved_voice,
-            max_gen_length=(
-                self.config.max_gen_length
-                if query.max_seq_len is None
-                else query.max_seq_len
-            ),
-            seed=query.seed,
-            temperature=query.temperature,
-            top_k=query.top_k,
-            cfg_alpha=query.cfg_alpha,
-        )
+        # `cfg_alpha` is already validated against the loaded model's
+        # supported set before the channel slot is even taken (see
+        # `_cfg_alpha_query_error` in `handle_connection`), so this should
+        # never fail on that account -- but any other unexpected construction
+        # failure (a `ValueError` or otherwise) must still become a
+        # sanitized protocol `Error` and a clean close, not an uncaught
+        # exception that leaves the socket dying with 1011 and no `Error`
+        # (RAV-1552 B2). The message is fully generic (never the exception
+        # text) since, unlike the voice-resolution/embedding paths above,
+        # there is no safe, client-supplied value to name here.
+        try:
+            session = await asyncio.to_thread(
+                self._session_cls,
+                bundle=self.bundle,
+                voice=resolved_voice,
+                max_gen_length=(
+                    self.config.max_gen_length
+                    if query.max_seq_len is None
+                    else query.max_seq_len
+                ),
+                seed=query.seed,
+                temperature=query.temperature,
+                top_k=query.top_k,
+                cfg_alpha=query.cfg_alpha,
+            )
+        except Exception:
+            self.metrics.protocol_errors.inc()
+            logger.exception("tts: session construction failed")
+            await connection.send(
+                pack_message(TtsErrorMessage(message="session initialization failed"))
+            )
+            await connection.close()
+            return
 
         first_text_at: float | None = None
         first_output_sent = False
@@ -361,12 +739,17 @@ class TtsServer:
                 try:
                     data = unpack_message(raw)
                     message = TtsClientMessageAdapter.validate_python(data)
-                except Exception as exc:
+                except Exception:
+                    # Never interpolate the exception into the client-facing
+                    # message (RAV-1552 B1): a msgpack-unpack failure or a
+                    # pydantic `ValidationError` can echo back arbitrary
+                    # bytes/structure from the frame itself, and there is no
+                    # safe subset of that to select from a generic `Exception`.
+                    # The full detail is always logged.
                     self.metrics.protocol_errors.inc()
+                    logger.exception("tts: malformed client frame")
                     await connection.send(
-                        pack_message(
-                            TtsErrorMessage(message=f"malformed frame: {exc}")
-                        )
+                        pack_message(TtsErrorMessage(message="malformed frame"))
                     )
                     continue
 
@@ -399,16 +782,37 @@ class TtsServer:
                         session.apply_voice_embedding(
                             message.embeddings, message.shape
                         )
-                    except Exception as exc:
+                    except VoiceEmbeddingError as exc:
                         # Never crash on a malformed/mismatched embedding, and
                         # never silently keep the prior voice while pretending
-                        # to have applied the new one.
+                        # to have applied the new one. `VoiceEmbeddingError`'s
+                        # text is always ours (`tts/engine.py`) and safe to
+                        # forward verbatim: the structural checks name only
+                        # shapes/dimensions, and the two paths that can fail
+                        # on a third-party `mlx`/`moshi_mlx` exception use a
+                        # fixed, generic message instead of that exception's
+                        # own text (RAV-1552 F2) -- the detail is always
+                        # logged server-side, never forwarded to the client.
                         self.metrics.protocol_errors.inc()
                         await connection.send(
                             pack_message(
                                 TtsErrorMessage(
                                     message=f"invalid voice embedding: {exc}"
                                 )
+                            )
+                        )
+                        continue
+                    except Exception:
+                        # Any *other* exception type is not ours to forward
+                        # (RAV-1552 B1) -- `apply_voice_embedding` is
+                        # documented to only ever raise `VoiceEmbeddingError`,
+                        # but this is defense in depth against that contract
+                        # ever being violated by a future change.
+                        self.metrics.protocol_errors.inc()
+                        logger.exception("tts: voice embedding application failed unexpectedly")
+                        await connection.send(
+                            pack_message(
+                                TtsErrorMessage(message="invalid voice embedding")
                             )
                         )
                         continue
@@ -469,13 +873,45 @@ class TtsServer:
                     if self.config.log_transcripts:
                         streaming_extra["text"] = message.text
                     logger.info("tts: text streaming", extra=streaming_extra)
-                    first_output_sent = await self._emit_stream(
-                        connection,
-                        session.stream_text(message.text, cancelled.is_set),
-                        first_text_at,
-                        first_output_sent,
-                        cancelled,
-                    )
+                    try:
+                        first_output_sent = await self._emit_stream(
+                            connection,
+                            session.stream_text(message.text, cancelled.is_set),
+                            first_text_at,
+                            first_output_sent,
+                            cancelled,
+                        )
+                    except (ConnectionClosed, _ClientDisconnected):
+                        raise
+                    except GenerationLengthLimitError:
+                        # A legitimate terminal condition, not a crash (RAV-1552
+                        # S2): reported under its own metric label and message,
+                        # distinct from an unexpected generation failure.
+                        self.metrics.streaming_failures.labels(
+                            reason="length_limit"
+                        ).inc()
+                        await connection.send(
+                            pack_message(TtsErrorMessage(message=_LENGTH_LIMIT_MESSAGE))
+                        )
+                        await connection.close()
+                        return
+                    except Exception:
+                        # A generation failure must not close the socket
+                        # abruptly with no protocol Error (RAV-1552):
+                        # `_emit_stream` re-raises whatever the session's
+                        # generator raised, and `handle_connection` only
+                        # catches ConnectionClosed/_ClientDisconnected.
+                        self.metrics.streaming_failures.labels(
+                            reason="generation"
+                        ).inc()
+                        logger.exception("tts: streaming generation failed")
+                        await connection.send(
+                            pack_message(
+                                TtsErrorMessage(message="TTS generation failed")
+                            )
+                        )
+                        await connection.close()
+                        return
                 elif isinstance(message, TtsEosMessage):
                     buffered_terminal_handled = True
                     first_output_sent = await self._finish_session(
@@ -559,13 +995,38 @@ class TtsServer:
     ) -> bool:
         cancelled = threading.Event()
         if self.config.delivery_mode == "streaming":
-            return await self._emit_stream(
-                connection,
-                session.stream_eos(cancelled.is_set),
-                first_text_at,
-                first_output_sent,
-                cancelled,
-            )
+            try:
+                return await self._emit_stream(
+                    connection,
+                    session.stream_eos(cancelled.is_set),
+                    first_text_at,
+                    first_output_sent,
+                    cancelled,
+                )
+            except (ConnectionClosed, _ClientDisconnected):
+                raise
+            except GenerationLengthLimitError:
+                # Same distinction as the Text-message call site above
+                # (RAV-1552 S2): a legitimate terminal condition, not a
+                # generation failure.
+                self.metrics.streaming_failures.labels(reason="length_limit").inc()
+                await connection.send(
+                    pack_message(TtsErrorMessage(message=_LENGTH_LIMIT_MESSAGE))
+                )
+                return first_output_sent
+            except Exception:
+                # Same fix as the Text-message call site above (RAV-1552):
+                # never let a generation failure during the trailing Eos
+                # flush close the socket abruptly with no protocol Error.
+                # Both callers of `_finish_session` (Eos message and legacy
+                # null-byte Eos) close the connection themselves right after
+                # this returns, so this branch only sends the Error.
+                self.metrics.streaming_failures.labels(reason="generation").inc()
+                logger.exception("tts: streaming generation failed")
+                await connection.send(
+                    pack_message(TtsErrorMessage(message="TTS generation failed"))
+                )
+                return first_output_sent
         if not buffered_chunks:
             return first_output_sent
         buffered_text = " ".join(buffered_chunks)
@@ -602,6 +1063,15 @@ class TtsServer:
                 reason="disconnect"
             ).inc()
             raise
+        except GenerationLengthLimitError:
+            # Same distinction as the streaming-mode call sites above
+            # (RAV-1552 S2): a legitimate terminal condition, not a
+            # generation failure.
+            self.metrics.buffered_turn_failures.labels(reason="length_limit").inc()
+            await connection.send(
+                pack_message(TtsErrorMessage(message=_LENGTH_LIMIT_MESSAGE))
+            )
+            return first_output_sent
         except Exception:
             self.metrics.buffered_turn_failures.labels(
                 reason="generation"

@@ -208,6 +208,7 @@ defaults, and validation.
 | `TTS_HF_REPO` | TTS | Default `kyutai/tts-1.6b-en_fr` |
 | `TTS_DEFAULT_VOICE` | TTS | Voice used when the client doesn't pass `?voice=` |
 | `TTS_N_Q` | TTS | Generated codebook depth, default `24` (matches stock Unmute). **Do not lower to buy speed** — see [Performance envelope](#performance-envelope) |
+| `TTS_CFG_COEF` | TTS | Session-default classifier-free-guidance conditioning strength, default `2.0`. Must be a positive, finite number (checked at config-parse time, before any Hugging Face download, naming `TTS_CFG_COEF` in the error). Whether it's one of the *specific* values this model supports (`{1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0}` for `kyutai/tts-1.6b-en_fr`) is checked at model load, once the model's own supported set is known — see "If model load fails" below for what happens then; **this does not fail startup outright**, contrary to an earlier version of this line. A client's per-request `?cfg_alpha=` query param is checked against the same set before a channel slot is even taken (`?cfg_alpha=` with an unsupported value gets an `Error`, no `Ready`) and always overrides this default for that session. |
 | `TTS_QUANTIZE_BITS` | TTS | `8` is the validated profile; **`4` corrupts this model** |
 | `TTS_DELIVERY_MODE` | TTS | `streaming` (default) or `buffered_turn` |
 | `TTS_MAX_BUFFERED_CHARS` | TTS | Buffered-mode input bound, default `4096` |
@@ -225,6 +226,15 @@ isn't loopback.
 > `TTS_LOG_TRANSCRIPTS` write full spoken and synthesized text into structured
 > logs. Enable them only where you control the log sink and have consent from
 > whoever is speaking.
+
+> **Why `TTS_CFG_COEF` defaults to `2.0`, not `1.0`.** Upstream `moshi-server`'s
+> own `tts.toml` ships `cfg_coef = 2.0`, and production Unmute sends
+> `cfg_alpha=1.5` on every request (`unmute/tts/voices.py`) — neither upstream
+> component ever runs this model at `1.0`. This bridge's engine used to
+> hardcode `1.0` at model load, which renders synthesized voices nearly flat
+> compared to either upstream value; `TTS_CFG_COEF=2.0` restores parity with
+> the stock TOML default while still letting a per-request `cfg_alpha=`
+> override it.
 
 ## Talking to a running server manually
 
@@ -249,6 +259,19 @@ EOF
 Both servers also expose `GET /healthz` (liveness), `GET /readyz` (model loaded
 and a session slot free), and `GET /metrics` (Prometheus) on the same port as
 the WebSocket endpoint.
+
+> **If model load fails** (an unsupported `TTS_CFG_COEF`, a network failure
+> fetching weights from Hugging Face, corrupt weights, etc.), the process does
+> not exit. It keeps serving `/healthz`, `/readyz`, and `/metrics` so an
+> external supervisor or operator can observe the failure through `/readyz`'s
+> `model_load_error` field (see `src/unmute_mlx_bridge/observability.py::
+> ServiceHealth`) rather than the process disappearing outright — this
+> project is not deployed behind an orchestrator that would otherwise restart
+> it (see `AGENTS.md`'s Deploy Model section: local Apple Silicon, canary
+> only). A client that connects during this state gets `{"type": "Error",
+> "message": "model failed to load"}` and a clean close — distinct from the
+> `"model still loading"` message sent before the load attempt has finished
+> either way.
 
 ## Hardware evidence
 
