@@ -5,27 +5,54 @@ remotes, deploy surfaces, or safety boundaries change.
 
 ## Source Of Truth
 
-- Primary git: Forgejo `nate/unmute-mlx-bridge` (canonical private forge;
-  local remote `origin`)
-- Passive mirror: https://github.com/nwalker85/unmute-mlx-bridge (private;
-  local remote `github`)
+This section, and "Repository Posture" below, describe **two states**: the
+current phase, and what changes at the public-release flip. Both are decided
+(see [ADR-0001](docs/architecture/decisions/0001-public-release.md)) but only
+the current-phase column is live today. Do not read the "at flip" column as
+already true, and do not treat ADR-0001 itself as authorization to make it
+true — that still requires Nate's explicit approval per the Publication Gate
+below.
+
+| | Current phase (private incubation) | At the flip (ADR-0001) |
+|---|---|---|
+| Canonical git | Forgejo `nate/unmute-mlx-bridge` (local remote `origin`) | GitHub `nwalker85/unmute-mlx-bridge` |
+| Mirror | GitHub `nwalker85/unmute-mlx-bridge`, private, passive (local remote `github`) | Forgejo `nate/unmute-mlx-bridge`, pull/DR mirror |
+| History | Full private development history | Fresh squashed history exported to GitHub (see `docs/repo-intake.md` → "Publication Export Plan"); old private-mirror history on GitHub is discarded, not preserved |
+| CI surface | `.forgejo/workflows/ci.yml` (repo-owned Norns K3s runner) | `.github/workflows/ci.yml` (its triggers widen past `workflow_dispatch`) |
+| Visibility | Private | Public |
+
 - Project tracker: `docs/repo-intake.md` and Forgejo PRs are the durable
-  tracking surfaces for this repo
-- Human docs: `docs/` in this repo
-- Production URL or runtime: none — private incubation, no production cutover
+  tracking surfaces for this repo (today; GitHub Issues/PRs at the flip).
+- Human docs: `docs/` in this repo.
+- Production URL or runtime: none — private incubation, no production cutover.
+  The public release described here is a **repository** visibility change,
+  not a production cutover; those remain separate, both requiring their own
+  explicit approval.
 
 ## Repository Posture
 
-- **Forgejo is canonical** for development, PRs, CI, and review while this
-  repository is in private incubation. GitHub is a private passive mirror.
-- The repo remains **private** throughout incubation. Visibility change requires
-  explicit publication approval from Nate (see `docs/repo-intake.md`).
-- **Forgejo Actions is the intended remote CI surface**, using the repo-owned
+**Today:**
+
+- **Forgejo is canonical** for development, PRs, CI, and review. GitHub is a
+  private passive mirror.
+- The repo is **private**. Visibility change requires explicit publication
+  approval from Nate (see `docs/repo-intake.md` and the Publication Gate
+  below) — ADR-0001 records the decision's shape, not its approval.
+- **Forgejo Actions is the active remote CI surface**, using the repo-owned
   Norns K3s runner label `unmute-mlx-bridge` for portable Linux/amd64 CI.
-- GitHub Actions is dormant while GitHub is a passive mirror.
-- After explicit public-publication approval, reverse the authority boundary:
-  GitHub becomes canonical and Forgejo becomes a pull/DR mirror.
+- GitHub Actions is dormant (`on: workflow_dispatch` only in
+  `.github/workflows/ci.yml`) while GitHub is a passive mirror. This includes
+  its `hardware` job (macOS/Apple Silicon, added under RAV-1613) — dormant
+  along with everything else in that workflow, not live CI today.
 - Registry and artifact publication are deferred until explicit approval.
+
+**At the flip** (per ADR-0001, once Nate gives explicit publication
+approval): the authority boundary reverses — GitHub becomes canonical,
+Forgejo becomes a pull/DR mirror, `.github/workflows/ci.yml`'s triggers widen
+past manual dispatch, and history is exported per `docs/repo-intake.md` →
+"Publication Export Plan" rather than pushed in place. Update this file's
+"Today" bullets to describe the new reality once that happens — do not leave
+this section describing the pre-flip state after the flip has occurred.
 
 ### Verified Private-Incubation Enforcement State
 
@@ -132,8 +159,12 @@ Changing repository visibility from private to public requires:
 
 See `docs/repo-intake.md` → "Publication Export Plan" for the decided export
 mechanism (fresh squashed history for the public repo; full private history
-stays Forgejo-only) and the current list of files excluded from the public
-export.
+stays Forgejo-only), `.agents/checklists/publication-export.md` for the
+current by-name exclusion list, and
+[ADR-0001](docs/architecture/decisions/0001-public-release.md) for the full
+set of sub-decisions (history mechanism, authority flip, agent-surface
+publication, voice licensing, `cfg_coef` conformance) this gate's checklist
+items depend on. None of that is itself the approval this gate requires.
 
 ## Agent Workspace
 
@@ -142,5 +173,7 @@ Use `.agents/` for operational handoffs:
 - `.agents/context/repo-map.md` — entry points, tests, deploy surfaces
 - `.agents/checklists/pr.md` — before opening a PR
 - `.agents/checklists/release.md` — before claiming a release is live
+- `.agents/checklists/publication-export.md` — private-ops detail for the
+  publication export: by-name exclusion list, pre-flip sweep procedure
 - `.agents/plans/implementation/` — active implementation plans
 - `.agents/archive/` — completed or superseded agent plans

@@ -123,3 +123,31 @@ def test_tts_max_buffered_audio_seconds_unparseable_value_names_the_variable(mon
 
     with pytest.raises(ValueError, match="TTS_MAX_BUFFERED_AUDIO_SECONDS"):
         TtsConfig.from_env()
+
+
+def test_tts_default_voice_is_commercially_safe_default(monkeypatch):
+    """RAV-1613: the built-in default voice must be commercially safe --
+    licensed for commercial use with attribution -- not one of the CC BY-NC
+    4.0 `expresso/`/`ears/` samples this bridge previously defaulted to.
+
+    `unmute-prod-website/p329_022.wav` is Nate's blind-audition pick. Despite
+    living under `unmute-prod-website/`, it is VCTK speaker p329 and is
+    licensed CC BY 4.0 (attribution required), not CC0 like that directory's
+    own recordings -- see `kyutai/tts-voices`'s README: "p329_022.wav: comes
+    from VCTK, so CC BY 4.0". This is a deliberate deviation from upstream
+    `moshi-server`'s own default (`rust/moshi-server/tts.py`'s
+    `Config.default_voice`, `unmute-prod-website/default_voice.wav`, CC0);
+    see NOTICE and README.md's "Voice licensing" section for the
+    attribution this deviation requires."""
+    monkeypatch.delenv("TTS_DEFAULT_VOICE", raising=False)
+
+    assert TtsConfig.from_env().default_voice == "unmute-prod-website/p329_022.wav"
+
+
+def test_tts_default_voice_can_be_overridden(monkeypatch):
+    monkeypatch.setenv("TTS_DEFAULT_VOICE", "expresso/ex03-ex01_happy_001_channel1_334s.wav")
+
+    assert (
+        TtsConfig.from_env().default_voice
+        == "expresso/ex03-ex01_happy_001_channel1_334s.wav"
+    )

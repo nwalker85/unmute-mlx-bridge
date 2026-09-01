@@ -41,3 +41,47 @@ jobs:
         # Hardware tests (pytest -m hardware) are NOT run here.
         # They require Apple Silicon and real model weights.
         # Run them explicitly on the reference host only.
+
+  hardware:
+    # Real MLX inference, real Kyutai weights, real Apple Silicon (RAV-1613).
+    # macos-14 is an Apple Silicon (M1) GitHub-hosted runner -- see
+    # https://github.com/actions/runner-images/blob/main/images/macos/macos-14-Readme.md.
+    # This job stays dormant with the rest of this workflow (see the on:
+    # trigger above) until publication cutover; it is NOT added to
+    # .forgejo/workflows/ci.yml, which has no macOS runner capacity.
+    runs-on: macos-14
+    timeout-minutes: 45
+    continue-on-error: false
+    steps:
+      # actions/checkout v6.0.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Set up uv
+        # astral-sh/setup-uv v8.1.0
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+        with:
+          python-version: "3.12"
+
+      - name: Cache Hugging Face model weights
+        # actions/cache v6.1.0. Keyed on config.py, which is where this
+        # repo's model revision constants (STT_HF_REPO/TTS_HF_REPO/
+        # TTS_VOICE_REPO defaults) live -- a change to any of them
+        # invalidates the cache instead of silently reusing stale weights.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.cache/huggingface
+          key: >-
+            hardware-hf-cache-${{
+            hashFiles('src/unmute_mlx_bridge/config.py') }}
+          restore-keys: |
+            hardware-hf-cache-
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run hardware tests
+        # -s so real_time_factor/rms/etc. print output is visible in the log
+        # (see tests/hardware/test_{stt,tts}_hardware.py).
+        run: uv run --locked pytest -m hardware -q -s
+        # First uncached run downloads real Kyutai weights (a few GB) from
+        # Hugging Face -- see README.md's "Hardware CI" note.

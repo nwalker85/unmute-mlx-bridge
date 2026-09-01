@@ -188,7 +188,23 @@ class TtsConfig:
             hf_repo=os.getenv("TTS_HF_REPO", "kyutai/tts-1.6b-en_fr"),
             voice_repo=os.getenv("TTS_VOICE_REPO", "kyutai/tts-voices"),
             default_voice=os.getenv(
-                "TTS_DEFAULT_VOICE", "expresso/ex03-ex01_happy_001_channel1_334s.wav"
+                # Nate's blind-audition pick (RAV-1613). `p329_022.wav` is
+                # VCTK speaker p329, served from `unmute-prod-website/` but
+                # licensed CC BY 4.0 (sourced from VCTK, not one of that
+                # directory's own CC0 recordings -- see `kyutai/tts-voices`'
+                # README: "p329_022.wav: comes from VCTK, so CC BY 4.0").
+                # Commercially safe with attribution (see NOTICE), not CC0 --
+                # a deliberate deviation from upstream `moshi-server`'s own
+                # default (`rust/moshi-server/tts.py`'s
+                # `Config.default_voice`, `unmute-prod-website/
+                # default_voice.wav`, CC0), made because Nate's own listening
+                # preferred this voice. The previous default (`expresso/...`)
+                # is CC BY-NC 4.0 -- non-commercial only -- and must be an
+                # explicit opt-in, not what a new deployment gets with no
+                # configuration at all. See README.md's "Voice licensing"
+                # section for the full per-directory licensing breakdown.
+                "TTS_DEFAULT_VOICE",
+                "unmute-prod-website/p329_022.wav",
             ),
             quantize_bits=_env_optional_int("TTS_QUANTIZE_BITS"),
             max_gen_length=_env_int("TTS_MAX_GEN_LENGTH", 30_000),

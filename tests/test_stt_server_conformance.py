@@ -4,7 +4,7 @@ deterministic fake engine so this runs on any platform with no model weights
 that makes this possible — see its docstring).
 
 This is the "protocol tests start each service with an in-memory deterministic
-engine" suite called for in `docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md`
+engine" suite called for in `docs/design/architecture.md`
 §Testing Strategy.
 """
 

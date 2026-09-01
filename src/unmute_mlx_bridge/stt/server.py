@@ -2,7 +2,7 @@
 backed by real MLX inference on Apple Silicon.
 
 Session lifecycle matches the design doc
-(`docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md` §Session
+(`docs/design/architecture.md` §Session
 Lifecycle and Cancellation): one WebSocket owns one model session; a second
 concurrent connection is rejected with an `Error` and closed rather than queued;
 disconnecting cancels inference and releases the slot.

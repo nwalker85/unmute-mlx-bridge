@@ -20,3 +20,27 @@ No model weights are included in or redistributed by this repository. Weights
 loaded at runtime (e.g. kyutai/stt-1b-en_fr-candle, kyutai/tts-1.6b-en_fr)
 retain their original CC-BY-4.0 license from Kyutai; refer to the upstream
 repositories for current licensing terms.
+
+No voice samples are included in or redistributed by this repository either.
+Voices (kyutai/tts-voices) are fetched at runtime and licensed per-directory
+by Kyutai, not uniformly:
+
+  - vctk/*, cml-tts/*, voice-donations/*  CC BY 4.0 (voice-donations/* is CC0)
+  - unmute-prod-website/*                CC0, with three named exceptions:
+                                          degaulle-2.wav (public domain),
+                                          ex04_narration_longform_00001.wav
+                                          (CC BY-NC 4.0), p329_022.wav
+                                          (CC BY 4.0)
+  - expresso/*, ears/*                   CC BY-NC 4.0 (non-commercial only)
+
+This project's built-in default voice (TTS_DEFAULT_VOICE) is
+unmute-prod-website/p329_022.wav, which is licensed CC BY 4.0, not CC0: it
+uses a voice from the VCTK corpus (CSTR, University of Edinburgh), CC BY
+4.0. This is a commercially-safe default (attribution provided in this
+file), and a deliberate deviation from upstream moshi-server's own default
+(unmute-prod-website/default_voice.wav, CC0) -- Nate's blind-audition pick,
+not a correctness fix. CC0 alternatives remain available by setting
+TTS_DEFAULT_VOICE to unmute-prod-website/default_voice.wav or any
+voice-donations/* voice. See README.md's "Voice licensing" section for the
+full table and source. Selecting an expresso/ or ears/ voice is an explicit
+opt-in and is not licensed for commercial use.

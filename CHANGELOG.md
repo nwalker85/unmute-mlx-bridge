@@ -11,6 +11,47 @@ compatibility or version labels.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-31
+
+### Performance
+
+<!-- RTF numbers pending benchmark: FILLED 2026-08-31, see below -->
+
+Re-measured 2026-08-31 at commit `3249e9e` on an Apple M4 Pro (Mac Mini),
+~40s sustained continuous speech, in-process, `kyutai/tts-1.6b-en_fr`,
+`n_q=32`, default voice: **q8 generates faster than real time** — 1.844× at
+this bridge's default `cfg_coef=2.0` (time-to-first-audio 1.54s), 1.886× at
+production Unmute's `cfg_alpha=1.5` (1.05s); unquantized at `cfg_coef=2.0` is
+0.589× (1.58s), the profile `buffered_turn` is actually for. This inverts the
+previous framing (TTS categorically "below real time") and supersedes —
+rather than merely refines — the old "8-bit 0.594×" figure, which was
+measured at `cfg_coef=1.0` and does not reproduce; today's unquantized number
+lands almost exactly on that old figure instead, the likely real explanation.
+See README.md's "Performance envelope" section for the full table, the
+correction note, and `scripts/bench_rtf.py` to reproduce on your own
+hardware.
+
+### Changed
+
+- **Breaking (behavior):** `TTS_DEFAULT_VOICE` now defaults to
+  `unmute-prod-website/p329_022.wav` (RAV-1613) — Nate's blind-audition pick
+  among candidates. The previous default,
+  `expresso/ex03-ex01_happy_001_channel1_334s.wav`, is licensed CC BY-NC 4.0
+  (non-commercial only). The new default is a **commercially-safe default
+  (CC BY 4.0, attribution provided — see NOTICE)**: despite living under
+  `unmute-prod-website/`, this specific file is VCTK speaker p329, not one of
+  that directory's own CC0 recordings. This is a deliberate deviation from
+  upstream `moshi-server`'s own default (`unmute-prod-website/
+  default_voice.wav`, CC0) made for how it sounds, not a licensing
+  necessity — CC0 alternatives remain available
+  (`unmute-prod-website/default_voice.wav`, `voice-donations/*`) via
+  `TTS_DEFAULT_VOICE`, and the CC BY-NC 4.0 `expresso/`/`ears/` voices remain
+  opt-in only. A deployment that relied on the old default's specific voice
+  identity and does not set `TTS_DEFAULT_VOICE` explicitly will hear a
+  different voice after upgrading. See README.md's "Voice licensing" section
+  for the full per-directory licensing table — voices are not uniformly CC
+  BY 4.0 as an earlier version of this document implied.
+
 ### Added
 
 - Initial repository scaffold: governance files, package seed, and portable CI.
@@ -66,6 +107,47 @@ compatibility or version labels.
   increments a labelled counter (TTS: `query`, `format`, `voices`, `loading`,
   `cfg_alpha`; STT: `loading`), not just `cfg_alpha` as before. See
   `docs/observability.md`.
+- **Public release readiness (RAV-1613):**
+  - `pyproject.toml` gains `license = "Apache-2.0"` (+ `license-files`),
+    `readme`, `authors`, `keywords`, `classifiers`, and `[project.urls]`
+    (Homepage/Repository/Issues/Changelog) pointing at the GitHub-canonical
+    repo.
+  - `examples/tts_client.py` and `examples/stt_client.py`: small,
+    dependency-light WebSocket clients (`examples/README.md`), linked from
+    the main README, generalized from this project's ad-hoc e2e test
+    harness — argparse for URL/voice/file/auth, no absolute or
+    host-specific paths.
+  - `scripts/bench_rtf.py`: real-time-factor benchmark against the actual
+    `TtsModelBundle`/`TtsSession` engine, printing host, commit,
+    quantization, `n_q`, `cfg_coef`, audio/wall seconds, RTF, and
+    time-to-first-audio. Marked "requires Apple Silicon + weights"; README's
+    Performance envelope section now points users at it.
+  - `.github/workflows/ci.yml` gains a `hardware` job on `macos-14` (Apple
+    Silicon), running `pytest -m hardware -q -s` with the Hugging Face
+    cache preserved via `actions/cache`. Stays dormant with the rest of
+    that workflow (`on: workflow_dispatch`) until publication cutover; not
+    added to `.forgejo/workflows/ci.yml` (no macOS runner capacity there).
+  - `docs/architecture/decisions/0001-public-release.md`
+    (status: **Proposed**): records the history-export mechanism, the
+    Forgejo/GitHub authority flip, agent-surfaces-ship-publicly rationale,
+    voice licensing posture, and the `cfg_coef=2.0` default as a
+    conformance decision — not itself an approval to execute any of it.
+  - `AGENTS.md` rewritten to describe both the current phase and the flip
+    (per ADR-0001) instead of only the current direction as an absolute;
+    guardrails unchanged.
+  - The by-name publication-export exclusion list moved from
+    `docs/repo-intake.md` into `.agents/checklists/publication-export.md`
+    (private-ops detail level); three private-ops docs whose filenames
+    previously named an internal reference host renamed to drop that
+    hostname (content unchanged) since the exclusion list referencing them
+    now ships publicly via `.agents/`.
+  - The core design spec moved from
+    `docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md` to
+    `docs/design/architecture.md` (it is the one `superpowers/` doc that
+    ships publicly); every cross-reference updated.
+  - `docs/runbooks/deploy.md`: the first real runbook — launchd/PM2 service
+    shape, environment table, ports, `/healthz`/`/readyz`/`/metrics`,
+    load-failure behavior.
 
 ### Fixed
 
@@ -200,12 +282,10 @@ compatibility or version labels.
 - Not yet run as a full microphone-to-speaker canary — see README §What's
   proven / what's not. Stock Unmute process compatibility is proven.
 
-## [0.1.0] — planned
-
-Initial scaffold posture. Not yet released.
-
-### Added
-
-- Python package seed under `src/unmute_mlx_bridge/`.
-- Smoke test confirming `main` is callable.
-- Development shell via `flake.nix`.
+<!--
+  A prior scaffold-only "[0.1.0] — planned" entry lived here, listing just
+  the package seed, smoke test, and flake.nix. Removed as a duplicate
+  version header once 0.1.0 became a real, dated release above — its
+  content is already covered by this section's "Initial repository
+  scaffold" bullet.
+-->

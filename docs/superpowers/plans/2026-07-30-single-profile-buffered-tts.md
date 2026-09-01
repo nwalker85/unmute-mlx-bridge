@@ -1170,8 +1170,8 @@ git diff origin/fix/tts-receive-queue...HEAD -- \
   tests/test_config.py \
   tests/test_observability.py \
   tests/test_tts_server_conformance.py \
-  docs/superpowers/specs/2026-07-30-odin-single-profile-buffered-tts-design.md \
-  docs/superpowers/plans/2026-07-30-odin-single-profile-buffered-tts.md
+  docs/superpowers/specs/2026-07-30-single-profile-buffered-tts-design.md \
+  docs/superpowers/plans/2026-07-30-single-profile-buffered-tts.md
 ```
 
 Expected: no dependency, frontend, partial-codebook, SIP, G.711, Fenrir, or

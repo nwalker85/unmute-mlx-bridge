@@ -9,7 +9,7 @@ the commits pinned below, and it is the compatibility oracle for
 
 Everything here traces to a specific file and line range in one of these three
 repositories, pinned exactly as in
-`docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md`:
+`docs/design/architecture.md`:
 
 | Repo | Commit | Role |
 |---|---|---|

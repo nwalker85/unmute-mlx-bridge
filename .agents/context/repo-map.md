@@ -42,9 +42,10 @@ not fork Unmute, own conversation state, or embed consumer-specific logic.
 │   └── hardware/                          real MLX inference, opt-in
 ├── docs/
 │   ├── repo-intake.md            lifecycle decisions
+│   ├── design/architecture.md    full design spec and non-goals
 │   ├── architecture/decisions/   ADRs
-│   ├── runbooks/                 operational procedures
-│   └── superpowers/specs/        design spec (do not modify)
+│   ├── runbooks/                 operational procedures (deploy.md, etc.)
+│   └── superpowers/               private ops notes (plans/specs, do not modify)
 ├── .forgejo/
 │   └── workflows/ci.yml          active private-incubation portable CI
 ├── .github/

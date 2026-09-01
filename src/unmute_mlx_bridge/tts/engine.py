@@ -290,7 +290,15 @@ class TtsSession:
             else:
                 voices = [
                     tts_model.get_voice_path(
-                        self.voice or "expresso/ex03-ex01_happy_001_channel1_334s.wav"
+                        # Matches `config.py`'s `TTS_DEFAULT_VOICE` default
+                        # (RAV-1613): VCTK speaker p329, CC BY 4.0 with
+                        # attribution (Nate's blind-audition pick), not the
+                        # CC BY-NC 4.0 `expresso/` sample this used to fall
+                        # back to. In normal operation `self.voice` is
+                        # already `config.default_voice` by the time it
+                        # reaches here (see `tts/server.py`), so this
+                        # fallback should not be reachable in practice.
+                        self.voice or "unmute-prod-website/p329_022.wav"
                     )
                 ]
         else:

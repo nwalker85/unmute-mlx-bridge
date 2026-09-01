@@ -31,10 +31,11 @@ and no configuration either: the bridge's default ports are already the ones
 Unmute looks for.
 
 > **Verified on a Mac Mini M4 Pro.** Real Kyutai weights, real MLX inference,
-> and multi-turn conversations driven by the pinned stock Unmute backend. TTS
-> throughput sits below real time on this hardware, which `buffered_turn` is
-> designed around — see [Performance envelope](#performance-envelope) for the
-> measured numbers before you plan against it.
+> and multi-turn conversations driven by the pinned stock Unmute backend. The
+> default 8-bit profile runs comfortably above real time on this hardware;
+> `buffered_turn` is recommended specifically for the unquantized fidelity
+> profile, which is not — see [Performance envelope](#performance-envelope)
+> for the measured numbers before you plan against either.
 
 <!--
   DEMO VIDEO — not yet recorded. See docs/demo-recording.md for what to capture
@@ -73,7 +74,7 @@ Verify the install without touching a microphone:
 ```bash
 # Portable: protocol + full session-lifecycle conformance against a fake
 # engine. No model weights, runs on any platform.
-uv run --locked pytest -q          # 135 passed, 5 deselected
+uv run --locked pytest -q          # 253 passed, 5 deselected
 
 # Hardware: real MLX inference, real weights, Apple Silicon only.
 uv run --locked pytest -m hardware -q -s
@@ -111,40 +112,77 @@ the oracle the implementation is tested against.
 
 ## Performance envelope
 
-Measured on a Mac Mini M4 Pro with `kyutai/tts-1.6b-en_fr`, at full generated
-codebook depth:
+**q8 streaming is comfortably real-time on this hardware.** The previous
+version of this table implied TTS generation was categorically below real
+time; that was wrong for the 8-bit profile this bridge actually defaults to
+— see the correction note below the table.
 
-| Configuration | TTS output rate | Verdict |
+Measured 2026-08-31 at commit `3249e9e` on an Apple M4 Pro (Mac Mini),
+synthesizing a sustained ~40s continuous-speech paragraph in-process (calling
+the engine directly — no WebSocket framing overhead) with
+`kyutai/tts-1.6b-en_fr`, `n_q=32` (fuller codebook depth than this project's
+own `TTS_N_Q=24` default — see the note below the table), this bridge's
+default voice:
+
+| Configuration | RTF | Time-to-first-audio |
 |---|---|---|
-| Unquantized | **0.374×** real time | Best fidelity; well below real time |
-| Full-model 8-bit | **0.594×** real time | Validated profile; slight loss of low/mid richness |
+| **q8, `cfg_coef=2.0`** (this bridge's default) | **1.844×** real time | 1.54 s |
+| q8, `cfg_alpha=1.5` (production Unmute's value) | **1.886×** real time | 1.05 s |
+| Unquantized, `cfg_coef=2.0` | **0.589×** real time | 1.58 s |
 | 4-bit | — | **Rejected — corrupts this model** (gibberish, mixed voices) |
 | Reduced codebook depth | faster | **Rejected — breaks the autoregressive contract** (unintelligible) |
 
-**TTS generation on this hardware is below real time** — 0.594× means ~3.5
-seconds of speech takes ~6 seconds to synthesize. That figure is *throughput*,
-not perceived responsiveness, and the two come apart in practice: with
-`buffered_turn`, the reference deployment sustains real multi-turn
-conversations that feel responsive, because the wait lands once ahead of the
-turn instead of as gaps inside it. Read the table as a capacity number to plan
-against, not as a verdict on how it feels.
+`n_q=32` is *more* generated codebooks than this project's own default
+(`TTS_N_Q=24`, matching stock Unmute) — these figures measure a heavier
+config than what a default deployment actually runs, not a lighter one.
+Fewer codebooks generally means less compute per step, so a default-config
+(`n_q=24`) run is expected to do at least this well, but that has not been
+separately measured — run `scripts/bench_rtf.py` (below) to get your own
+number at your own `n_q` rather than assume it.
 
-It is why the delivery mode matters:
+**Correction (2026-08-31): the previously published "8-bit 0.594×" figure is
+superseded, not confirmed.** It was measured at `cfg_coef=1.0` — a value this
+engine no longer runs at all (`TTS_CFG_COEF` now always defaults to `2.0`,
+see [Configuration](#configuration)) — and does not reproduce: today's q8
+figure at the equivalent settings is **1.844×**, over 3× higher. Today's
+*unquantized* figure at `cfg_coef=2.0` (**0.589×**) lands almost exactly on
+that old "0.594×" number instead, which is the more likely explanation —
+the original measurement probably exercised the unquantized path while
+believed to be measuring 8-bit. Rather than silently overwrite the old
+number, this note is on the record: the old table is superseded by the one
+above, not merely refined.
 
-- **`streaming`** (default) — emits audio per chunk, as upstream does. On
-  hardware that generates below real time, playback can underrun mid-sentence.
+**q8 (this bridge's default) generates faster than real time — 1.844× at the
+default `cfg_coef=2.0`, 1.886× at production Unmute's `cfg_alpha=1.5`.** Both
+are comfortably above `1.0×`, meaning `streaming` mode (the default delivery
+mode) does not need to underrun in normal use on this hardware. The
+**unquantized** profile is the one still below real time (0.589×) — best
+fidelity, at a real throughput cost — and that is where `buffered_turn`
+actually earns its keep:
+
+- **`streaming`** (default) — emits audio per chunk, as upstream does. On the
+  default q8 profile, measured generation outruns playback; on the
+  unquantized profile, or on slower Apple Silicon, playback can underrun
+  mid-sentence.
 - **`buffered_turn`** — buffers the whole assistant turn, synthesizes it, then
-  releases continuous audio. A deliberate latency-for-continuity trade: it does
-  not make generation faster, it converts intermittent stutter into a single
-  pre-speech wait followed by clean, uninterrupted speech.
+  releases continuous audio. Recommended specifically for the unquantized
+  fidelity profile (or any hardware/config combination measuring below real
+  time), not as a blanket workaround for q8 streaming, which doesn't need it
+  on this hardware.
 
-On faster Apple Silicon, or with shorter turns, the streaming path is more
-comfortable. Pick per deployment; both are supported and tested.
+Pick per deployment; both delivery modes are supported and tested regardless
+of quantization profile.
 
 STT keeps up materially better than TTS — the hardware test prints its own
 `real_time_factor` so you can measure your machine rather than trust this
 table. Numbers here are from one reference host and are not a promise about
 yours.
+
+**Run it on your own machine:** `uv run --locked python scripts/bench_rtf.py`
+loads the real model (Apple Silicon + downloaded weights required — see the
+script's own header), synthesizes a fixed ~60s paragraph, and prints your
+host, commit, quantization, `n_q`, `cfg_coef`, and real-time factor in the
+same shape as this table, plus time-to-first-audio.
 
 ## What's proven / what's not
 
@@ -175,12 +213,23 @@ that matters, read this before the quick start.
 - **Deterministic, artifact-free output.** Repeat runs of the deployed q8
   profile produced byte-identical PCM (matching SHA-256), zero clipping, and
   human-verified intelligibility, cadence, and stable voice identity.
+- **Full-process, real-weight protocol + loopback evidence (2026-08-31,
+  21/21).** Real TTS and STT server processes, real Kyutai weights, real
+  WebSocket connections end to end: a `Voice` message at session start
+  produces byte-identical audio to the equivalent `?voice=` query parameter;
+  the full pre-`Ready` rejection matrix (bad `format=`, unsupported
+  `cfg_alpha=`, unparsable/out-of-range numeric params, unresolvable
+  `voice=`/`voices=`, a second concurrent connection) is exercised against
+  the real server, not a fake engine; and TTS's own synthesized audio,
+  looped back into STT, produces a correct transcript with `Step.prs`
+  present and the requested `Marker` echoed back.
 
 **Not yet proven — the honest gaps:**
 
 - **No documented end-to-end microphone → speaker canary against *stock*
-  Unmute.** The compatibility evidence above is a backend-driven load test.
-  The full browser-mic path has been exercised during development, but not as
+  Unmute.** The compatibility evidence above (both the backend load test and
+  the 2026-08-31 protocol/loopback run) is backend- and script-driven. The
+  full browser-mic path has been exercised during development, but not as
   a recorded gate on an unmodified upstream checkout — so it isn't claimed
   here.
 - No sustained or long-duration real-time-factor measurement; no
@@ -206,7 +255,7 @@ defaults, and validation.
 | `STT_LOG_TRANSCRIPTS` | STT | Log full transcript text (default `false`) |
 | `TTS_HOST`, `TTS_PORT` | TTS | Bind address, default `127.0.0.1:8089` |
 | `TTS_HF_REPO` | TTS | Default `kyutai/tts-1.6b-en_fr` |
-| `TTS_DEFAULT_VOICE` | TTS | Voice used when the client doesn't pass `?voice=` |
+| `TTS_DEFAULT_VOICE` | TTS | Voice used when the client doesn't pass `?voice=`. Default `unmute-prod-website/p329_022.wav` (CC BY 4.0, attribution required) — see [Voice licensing](#voice-licensing) before changing it to an `expresso/`/`ears/` voice |
 | `TTS_N_Q` | TTS | Generated codebook depth, default `24` (matches stock Unmute). **Do not lower to buy speed** — see [Performance envelope](#performance-envelope) |
 | `TTS_CFG_COEF` | TTS | Session-default classifier-free-guidance conditioning strength, default `2.0`. Must be a positive, finite number (checked at config-parse time, before any Hugging Face download, naming `TTS_CFG_COEF` in the error). Whether it's one of the *specific* values this model supports (`{1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0}` for `kyutai/tts-1.6b-en_fr`) is checked at model load, once the model's own supported set is known — see "If model load fails" below for what happens then; **this does not fail startup outright**, contrary to an earlier version of this line. A client's per-request `?cfg_alpha=` query param is checked against the same set before a channel slot is even taken (`?cfg_alpha=` with an unsupported value gets an `Error`, no `Ready`) and always overrides this default for that session. |
 | `TTS_QUANTIZE_BITS` | TTS | `8` is the validated profile; **`4` corrupts this model** |
@@ -295,15 +344,24 @@ Both print `real_time_factor` (audio seconds ÷ wall-clock seconds). Run them
 before trusting anything downstream — that number is the first hard question
 this project asks.
 
+**Hardware CI.** `.github/workflows/ci.yml`'s `hardware` job runs this exact
+suite (`pytest -m hardware -q -s`) on a `macos-14` (Apple Silicon)
+GitHub-hosted runner, with the Hugging Face cache preserved between runs via
+`actions/cache`. The first run against an uncached key downloads real Kyutai
+weights — a few GB — before any test executes; later runs restore from cache
+unless the pinned model repos change.
+
 ## FAQ / troubleshooting
 
 **Do I need a GPU?** No. MLX uses the Mac's unified memory and Metal.
 
-**Is it fast enough for live conversation?** Yes, in the reference deployment —
-a Mac Mini M4 Pro running `buffered_turn` sustains real multi-turn
-conversations. TTS *throughput* is below real time (see
-[Performance envelope](#performance-envelope)), so long single turns cost a
-longer pre-speech wait, and `streaming` mode can underrun. Measure your own
+**Is it fast enough for live conversation?** Yes — on the reference Mac Mini
+M4 Pro, the default 8-bit profile generates faster than real time (see
+[Performance envelope](#performance-envelope)), so `streaming` mode (the
+default) does not need `buffered_turn` to keep up in normal use. Only the
+unquantized fidelity profile runs below real time; use `buffered_turn` there,
+or on slower Apple Silicon generally, to trade a longer pre-speech wait for
+uninterrupted playback instead of mid-sentence underruns. Measure your own
 hardware before committing to a latency budget.
 
 **First start hangs.** It's downloading several GB of weights. Poll
@@ -317,8 +375,11 @@ query param — see [`PROTOCOL.md`](PROTOCOL.md).
 matching stock `moshi-server`. Disconnect the first, or run another instance on
 a different port.
 
-**Speech sounds halting or stutters.** You're likely generating below real time
-in `streaming` mode. Try `TTS_DELIVERY_MODE=buffered_turn`.
+**Speech sounds halting or stutters.** You're likely generating below real
+time in `streaming` mode — expected on the unquantized profile, or on slower
+Apple Silicon than the reference host even at q8 (see
+[Performance envelope](#performance-envelope)). Try
+`TTS_DELIVERY_MODE=buffered_turn`.
 
 **Can I speed it up with `TTS_QUANTIZE_BITS=4` or a lower `TTS_N_Q`?** No —
 both are tested, documented failure modes on this model. See
@@ -341,7 +402,10 @@ This project exists specifically for Apple Silicon.
 | `tests/` | Portable protocol + conformance suite |
 | `tests/hardware/` | Opt-in real-MLX suite (`pytest -m hardware`) |
 | `docs/observability.md` | Metrics, structured logging, clock metadata |
-| `docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md` | Full design spec and non-goals |
+| [`docs/design/architecture.md`](docs/design/architecture.md) | Full design spec and non-goals |
+| [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md) | Deployment runbook: service shape, env, ports, health |
+| [`examples/`](examples/README.md) | Minimal TTS/STT WebSocket clients — a quick manual check or a starting point for your own client |
+| [`scripts/bench_rtf.py`](scripts/bench_rtf.py) | Real-time-factor benchmark on your own hardware — see [Performance envelope](#performance-envelope) |
 | `CHANGELOG.md` | Release history |
 
 ## Contributing
@@ -371,6 +435,48 @@ Built against, and compatible with:
 Model weights (`kyutai/stt-1b-en_fr-candle`, `kyutai/tts-1.6b-en_fr`) are **not
 redistributed** here. They retain their CC-BY-4.0 license from Kyutai. See
 [`NOTICE`](NOTICE) for full attribution text.
+
+### Voice licensing
+
+Voices (`voice=`/`voices=` query params, and this bridge's own
+`TTS_DEFAULT_VOICE`) are **not redistributed** here either — they are fetched
+at runtime from Kyutai's `kyutai/tts-voices` repository on Hugging Face, and
+this project does not vendor, cache, or ship any of them. **Licensing is
+per-directory, and it is not uniformly permissive** — read this before picking
+a voice for anything beyond local experimentation:
+
+| Voice path prefix | License | Commercial use |
+|---|---|---|
+| `unmute-prod-website/*` | CC0, **except**: `degaulle-2.wav` (public domain, 1940 recording), `ex04_narration_longform_00001.wav` (CC BY-NC 4.0, sourced from Expresso), **`p329_022.wav` (CC BY 4.0, sourced from VCTK — this bridge's default)** | Yes, for the CC0 files; yes with attribution for `p329_022.wav` |
+| `voice-donations/*` | CC0 | Yes |
+| `vctk/*` | CC BY 4.0 | Yes, with attribution |
+| `cml-tts/*` | CC BY 4.0 | Yes, with attribution |
+| `expresso/*` | **CC BY-NC 4.0** | **No** |
+| `ears/*` | **CC BY-NC 4.0** | **No** |
+
+Source: `kyutai/tts-voices`'s own README ("The others are our own recordings
+and you may use them as CC0" for `unmute-prod-website/`; each other directory
+states its license inline). Verify against that README directly before
+shipping a product built on a specific voice — it is the authority here, not
+this table.
+
+**This bridge's built-in default (`TTS_DEFAULT_VOICE`) is
+`unmute-prod-website/p329_022.wav`** — Nate's blind-audition pick. Despite
+living under `unmute-prod-website/`, this specific file is VCTK speaker p329,
+so it is licensed **CC BY 4.0, not CC0**: commercially safe, attribution
+required. **Attribution: uses a voice from the VCTK corpus (CSTR, University
+of Edinburgh), CC BY 4.0** (see [`NOTICE`](NOTICE) for the full attribution
+text). This is a
+deliberate deviation from upstream `moshi-server`'s own default
+(`unmute-prod-website/default_voice.wav`, CC0) — a preference choice, not a
+correctness fix. If you'd rather default to a CC0 voice with no attribution
+obligation, set `TTS_DEFAULT_VOICE=unmute-prod-website/default_voice.wav` (the
+upstream default) or any `voice-donations/*` voice. The CC BY-NC 4.0
+`expresso/`/`ears/` voices remain **opt-in only**: set `TTS_DEFAULT_VOICE` or
+pass `?voice=`/`?voices=` explicitly to use one, and do not use them in
+anything commercial. **No voice served through this bridge is blanket CC BY
+4.0** — that would be wrong for the NC-licensed directories above; the
+per-directory table is the accurate picture.
 
 ## License
 

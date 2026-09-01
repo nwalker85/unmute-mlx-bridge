@@ -27,7 +27,7 @@ Notes on fidelity to the real server:
   the init entry, and `moshi_mlx` caches cross-attention K/V per session, so a
   later per-chunk swap would have been a no-op anyway) and has been corrected
   back to session-start-only; see
-  `docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md` for the
+  `docs/design/architecture.md` for the
   full history.
   `shape` is validated against the flattened `embeddings` payload length here
   (a `ValueError` from this model, surfaced as a protocol `Error` by the

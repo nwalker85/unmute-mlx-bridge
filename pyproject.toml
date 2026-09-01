@@ -2,6 +2,30 @@
 name = "unmute-mlx-bridge"
 version = "0.1.0"
 description = "Apple Silicon MLX streaming STT/TTS servers compatible with the Kyutai Unmute model protocol"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Nate Walker" }]
+keywords = [
+  "unmute",
+  "kyutai",
+  "moshi",
+  "mlx",
+  "apple-silicon",
+  "speech-to-text",
+  "text-to-speech",
+  "websocket",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: MacOS :: MacOS X",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+  "Topic :: Communications :: Chat",
+]
 requires-python = ">=3.12,<3.13"
 dependencies = [
   # `mlx`/`moshi-mlx` publish wheels for Apple Silicon only (a partial Linux
@@ -29,6 +53,12 @@ dev = [
   "pytest",
   "pytest-asyncio>=0.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/nwalker85/unmute-mlx-bridge"
+Repository = "https://github.com/nwalker85/unmute-mlx-bridge"
+Issues = "https://github.com/nwalker85/unmute-mlx-bridge/issues"
+Changelog = "https://github.com/nwalker85/unmute-mlx-bridge/blob/main/CHANGELOG.md"
 
 [project.scripts]
 unmute-mlx-bridge = "unmute_mlx_bridge:main"

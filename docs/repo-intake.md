@@ -119,25 +119,17 @@ public GitHub-canonical repo at cutover — supersedes any prior assumption that
   reference sweep below — stays on Forgejo only and is never pushed to the
   public remote. Do not `git push --force` the existing Forgejo `main` history
   to GitHub as a rewrite-in-place; generate a new history instead.
-- **Excluded from the public export** (Forgejo-private only — internal ops
-  runbooks, not user-facing documentation):
-  - `docs/superpowers/plans/2026-07-29-tts-query-fidelity.md`
-  - `docs/superpowers/plans/2026-07-30-odin-single-profile-buffered-tts.md`
-  - `docs/superpowers/specs/2026-07-29-tts-query-fidelity-design.md`
-  - `docs/superpowers/specs/2026-07-29-odin-tts-codebook-depth-design.md`
-  - `docs/superpowers/specs/2026-07-30-odin-single-profile-buffered-tts-design.md`
-  - `docs/superpowers/specs/2026-07-30-tts-fidelity-lessons.md`
-
-  These contain internal infrastructure identifiers, SSH aliases, and canary
-  filesystem paths. `docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md`
-  is the core architecture doc (linked from `README.md`) and IS included in
-  the public export — it was verified clean of such references
+- **Excluded from the public export**: see the private ops checklist,
+  `.agents/checklists/publication-export.md`, for the current by-name
+  exclusion list, the unmerged-branch exclusion, and the pre-flip sweep
+  procedure. That checklist is deliberately kept at private-ops detail level
+  rather than duplicated here.
+- `docs/design/architecture.md` (formerly
+  `docs/superpowers/specs/2026-07-26-unmute-mlx-bridge-design.md`) is the core
+  architecture doc (linked from `README.md`) and IS included in the public
+  export — it was verified clean of internal infrastructure references
   (`gitleaks detect --log-opts="--all"`, 2026-08-22: 0 leaks; plus a pattern
   sweep for internal infrastructure identifiers).
-- **The unmerged `forge-ci-bootstrap` branch** (internal CI bootstrap
-  scaffolding referencing an internal build host, a private package registry,
-  and a private token path) is excluded by construction — the export only ever
-  walks `main`. Left as a private branch pending a separate prune decision.
 - Before the actual visibility flip, re-run the full sweep against the exact
   commit being exported, not just this snapshot: `gitleaks detect --source .
   --log-opts="--all"`, `git secrets --scan-history`, and the internal-identifier
