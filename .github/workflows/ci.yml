@@ -5,6 +5,10 @@ name: ci
 # Re-enable automatic triggers only after explicit publication approval.
 
 on:  # yamllint disable-line rule:truthy
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
