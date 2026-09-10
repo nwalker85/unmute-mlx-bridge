@@ -24,6 +24,13 @@ compatibility or version labels.
   historical presence is documented in ADR-0001 and requires a separate,
   explicitly approved history-remediation decision if it is ever addressed.
 
+### Security
+
+- Override `moshi-mlx 0.3.0`'s stale transitive constraints so the locked
+  runtime uses patched `aiohttp`, `mlx`, and `sentencepiece` releases. This
+  removes the vulnerable versions behind the repository's 36 Dependabot
+  alerts while keeping the overrides bounded to the patched release lines.
+
 ## [0.1.0] - 2026-08-31
 
 ### Performance
