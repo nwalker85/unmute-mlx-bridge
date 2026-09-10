@@ -1,21 +1,19 @@
-# PR Checklist
+# Pull Request Checklist
 
-- [ ] Work is on a branch or dedicated worktree, not direct `main`.
-- [ ] Scope is described clearly in the PR body.
-- [ ] Tests run are listed with exact commands (`uv sync --locked && git diff --check && uv run --locked pytest -q`).
-- [ ] Remote Forgejo Actions state is reported for the PR commit, including
-      run name, conclusion/failure class, runner label, and job count.
-- [ ] If no remote job starts, the PR body includes locked local evidence for
-      `uv sync --locked`, `git diff --check`, and
-      `uv run --locked pytest -q`, with exact commands and results.
-- [ ] Forgejo/GitHub mergeability is treated only as mergeability metadata, not
-      as CI evidence.
-- [ ] Screenshots or evidence are attached for UI/user-visible changes.
-- [ ] Backward compatibility and migration notes are included when relevant.
-- [ ] Sensitive data scan completed: no secrets, raw data, private exports,
-      private hostnames, topology, recordings, or generated evidence.
-- [ ] No model weights or Hugging Face cache artifacts committed.
-- [ ] Hardware-gated tests (`pytest -m hardware`) are not in the portable CI job.
-- [ ] `package-surface.json` is consistent with any CI or registry changes.
-- [ ] Known limitations and follow-ups are stated.
-- [ ] Reviewer can reproduce validation from the PR body.
+- [ ] Work is on a branch or dedicated worktree, never directly on `main`.
+- [ ] The PR explains scope, compatibility impact, and proof boundaries.
+- [ ] `uv sync --locked` succeeds.
+- [ ] `git diff --check` succeeds.
+- [ ] `uv run --locked pytest -q` succeeds on the exact commit.
+- [ ] Workflow changes pass YAML validation and `actionlint` when available.
+- [ ] GitHub Actions reports `Portable tests` for the exact PR commit.
+- [ ] Hardware tests remain explicitly marked and absent from untrusted PR CI.
+- [ ] Protocol changes update upstream pins, citations, fixtures, tests, and
+      `PROTOCOL.md` together.
+- [ ] No secrets, recordings, model weights, private identifiers, generated
+      evidence, or internal infrastructure details are present.
+- [ ] README, changelog, support, security, and architecture docs reflect any
+      public behavior change.
+- [ ] The report distinguishes local validation, CI, hardware proof, release,
+      deployment, and downstream live verification.
+- [ ] Merge waits for Nate's explicit approval of this specific PR.

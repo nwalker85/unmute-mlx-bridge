@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/nwalker85/unmute-mlx-bridge/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/nwalker85/unmute-mlx-bridge/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="License: Apache 2.0" src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
   <img alt="Python 3.12" src="https://img.shields.io/badge/python-3.12-blue.svg">
   <img alt="Platform: Apple Silicon" src="https://img.shields.io/badge/platform-Apple%20Silicon-black.svg">
@@ -16,7 +17,8 @@
   <a href="#performance-envelope">Performance</a> ·
   <a href="#whats-proven--whats-not">What's proven</a> ·
   <a href="#configuration">Configuration</a> ·
-  <a href="#faq--troubleshooting">FAQ</a>
+  <a href="#faq--troubleshooting">FAQ</a> ·
+  <a href="https://github.com/nwalker85/unmute-mlx-bridge/discussions">Discussions</a>
 </p>
 
 ---
@@ -30,11 +32,18 @@ protocol and run inference through
 and no configuration either: the bridge's default ports are already the ones
 Unmute looks for.
 
+> **Project status:** public pre-1.0 source release for Apple Silicon. Install
+> from this repository; no PyPI package or container image is published yet.
+> Use [Discussions](https://github.com/nwalker85/unmute-mlx-bridge/discussions)
+> for questions and ideas, [Issues](https://github.com/nwalker85/unmute-mlx-bridge/issues)
+> for reproducible defects, and [private vulnerability reporting](SECURITY.md)
+> for security concerns.
+
 > **Verified on a Mac Mini M4 Pro.** Real Kyutai weights, real MLX inference,
 > and multi-turn conversations driven by the pinned stock Unmute backend. The
 > default 8-bit profile runs comfortably above real time on this hardware;
 > `buffered_turn` is recommended specifically for the unquantized fidelity
-> profile, which is not — see [Performance envelope](#performance-envelope)
+> profile, which remains below real time — see [Performance envelope](#performance-envelope)
 > for the measured numbers before you plan against either.
 
 <!--
@@ -74,7 +83,7 @@ Verify the install without touching a microphone:
 ```bash
 # Portable: protocol + full session-lifecycle conformance against a fake
 # engine. No model weights, runs on any platform.
-uv run --locked pytest -q          # 253 passed, 5 deselected
+uv run --locked pytest -q
 
 # Hardware: real MLX inference, real weights, Apple Silicon only.
 uv run --locked pytest -m hardware -q -s
@@ -344,12 +353,12 @@ Both print `real_time_factor` (audio seconds ÷ wall-clock seconds). Run them
 before trusting anything downstream — that number is the first hard question
 this project asks.
 
-**Hardware CI.** `.github/workflows/ci.yml`'s `hardware` job runs this exact
-suite (`pytest -m hardware -q -s`) on a `macos-14` (Apple Silicon)
-GitHub-hosted runner, with the Hugging Face cache preserved between runs via
-`actions/cache`. The first run against an uncached key downloads real Kyutai
-weights — a few GB — before any test executes; later runs restore from cache
-unless the pinned model repos change.
+**Hardware CI.** `.github/workflows/ci.yml` can run this exact suite
+(`pytest -m hardware -q -s`) on a `macos-14` Apple Silicon runner. It is a
+manual `workflow_dispatch` option, not a pull-request job: real-model proof
+downloads several gigabytes of Kyutai weights and must never be triggered by
+untrusted contributions. The Hugging Face cache is preserved between approved
+runs and invalidated when the configured model repositories change.
 
 ## FAQ / troubleshooting
 
@@ -403,10 +412,12 @@ This project exists specifically for Apple Silicon.
 | `tests/hardware/` | Opt-in real-MLX suite (`pytest -m hardware`) |
 | `docs/observability.md` | Metrics, structured logging, clock metadata |
 | [`docs/design/architecture.md`](docs/design/architecture.md) | Full design spec and non-goals |
+| [`docs/architecture/decisions/`](docs/architecture/decisions/) | Architecture decision records and compatibility constraints |
 | [`docs/runbooks/deploy.md`](docs/runbooks/deploy.md) | Deployment runbook: service shape, env, ports, health |
 | [`examples/`](examples/README.md) | Minimal TTS/STT WebSocket clients — a quick manual check or a starting point for your own client |
 | [`scripts/bench_rtf.py`](scripts/bench_rtf.py) | Real-time-factor benchmark on your own hardware — see [Performance envelope](#performance-envelope) |
-| `CHANGELOG.md` | Release history |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development workflow, protocol-change rules, and evidence expectations |
 
 ## Contributing
 

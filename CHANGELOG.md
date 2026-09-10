@@ -11,6 +11,19 @@ compatibility or version labels.
 
 ## [Unreleased]
 
+### Repository
+
+- Reconciled the public GitHub-primary authority, CI, contribution, security,
+  and release documentation after publication.
+- Added a repository-specific GitHub Copilot protocol-review agent and shared
+  Copilot instructions.
+- Made real-model Apple Silicon CI an explicit manual action while keeping the
+  portable suite automatic for pull requests and `main`.
+- Added generated-release-note configuration and public support routing.
+- Removed private-incubation working plans from the current public tree; their
+  historical presence is documented in ADR-0001 and requires a separate,
+  explicitly approved history-remediation decision if it is ever addressed.
+
 ## [0.1.0] - 2026-08-31
 
 ### Performance

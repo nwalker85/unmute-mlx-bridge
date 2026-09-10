@@ -1,6 +1,6 @@
 # Unmute MLX Bridge Design
 
-**Status:** Approved for a canary spike
+**Status:** Implemented public source; downstream production cutover not authorized
 
 **Date:** 2026-07-26
 
@@ -8,7 +8,7 @@
 
 **License:** Apache-2.0
 
-**Visibility:** Private during incubation; publication requires explicit approval
+**Visibility:** Public; GitHub-primary
 
 ## Purpose
 
@@ -22,10 +22,9 @@ Unmute-compatible production MLX server. This project fills that
 interoperability gap without forking Unmute or embedding consumer-specific
 orchestration.
 
-The first consumer is a private Apple Silicon canary. That consumer does not
-define the planned public API, and no private credentials, hostnames, topology,
-logs, or recordings belong in this repository. The repository remains private
-throughout incubation.
+The first proof target was an Apple Silicon canary. A downstream consumer does
+not define the public API, and no private credentials, hostnames, topology,
+logs, or recordings belong in this repository.
 
 ## Upstream Compatibility Baseline
 
@@ -363,7 +362,7 @@ pinned build on the reference Apple Silicon host:
    source patch.
 2. One real microphone turn completes microphone to STT to an external
    OpenAI-compatible LLM to streamed TTS to speaker.
-3. One private-consumer canary reaches an external LLM, completes a safe tool
+3. One downstream-consumer canary reaches an external LLM, completes a safe tool
    call, and returns audible speech with correlated turn identifiers.
 4. User speech during output cancels the active TTS stream and the next turn
    succeeds.
@@ -383,47 +382,37 @@ authenticated browser or microphone boundary and return audible output.
 
 ## Delivery and Decision Sequence
 
-1. Keep the GitHub repository private throughout development and canary testing.
-2. Merge only reviewed project PRs with green portable CI.
-3. Run the pinned bridge build locally on the reference Apple Silicon host
+1. Merge only reviewed project PRs with green portable CI.
+2. Run the pinned bridge build locally on the reference Apple Silicon host
    under a supervised process.
-4. Run the stock Unmute and standalone microphone canaries.
-5. Run the private-consumer canary without changing its production default
+3. Run the stock Unmute and standalone microphone canaries.
+4. Run a downstream-consumer canary without changing its production default
    path.
-6. Record a sanitized benchmark report inside the private repository.
-7. If the hard proof criteria pass, write the downstream architecture decision
+5. Record a sanitized benchmark report without private identifiers or voice
+   data.
+6. If the hard proof criteria pass, write the downstream architecture decision
    using the measurements.
-8. Seek explicit approval for the ADR, integration PRs, and any production
+7. Seek explicit approval for the ADR, integration PRs, and any production
    cutover.
-9. Complete the publication gate and seek separate explicit approval before
-   changing repository visibility.
 
 Failure remains a useful outcome. The report will identify whether the blocker
 is model speed, memory pressure, MLX adapter behavior, protocol mismatch, or
 integration latency, without retroactively weakening the proof criteria.
 
-## Publication Gate
+## Release And Cutover Gates
 
-Changing the repository from private to public is an independent release
-decision. Before asking for publication approval, the project must have:
+The source repository is public. A GitHub Release, package publication, and
+downstream production cutover remain independent decisions. Before claiming a
+release or cutover, validate the exact commit on the named evidence surface,
+keep public artifacts free of private identifiers and recordings, preserve
+Apache-2.0/Kyutai/model/voice attribution, and obtain the explicit approval
+required for that event.
 
-- Green protocol and portable CI suites on the exact proposed public commit.
-- A clean secret scan across the entire Git history.
-- No private hostnames, credentials, topology, issue references, internal logs,
-  or identifiable voice recordings.
-- Complete Apache-2.0 notices, Kyutai attribution, model-license guidance, and
-  an unofficial-community-project disclaimer.
-- Reproducible installation and canary instructions that do not depend on
-  private infrastructure.
-- A reviewed README, security policy, contribution guide, code of conduct,
-  issue templates, and release notes.
-- A final visibility diff and explicit approval from Nate for publication.
-
-Passing the private-consumer canary does not itself authorize publication.
+Passing a downstream canary does not itself authorize a production cutover.
 
 ## Community Contribution Model
 
-After publication, the repository will welcome protocol fixtures, Apple
+The repository welcomes protocol fixtures, Apple
 Silicon measurements, MLX adapter improvements, and compatibility reports.
 Issues must include the hardware model, memory, macOS version, model identifier,
 quantization, bridge commit, and upstream Unmute revision.
