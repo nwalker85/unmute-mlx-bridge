@@ -36,6 +36,26 @@ def _fake_session_bundle(cfg_calls):
     return SimpleNamespace(tts_model=tts_model, cfg_coef_conditioning=1.0)
 
 
+def _mock_module(monkeypatch, fullname: str, module: types.ModuleType) -> None:
+    """Register a module and all its parent packages in sys.modules, linking
+    each parent's attribute to its child. Required so that `import a.b` statements
+    work on platforms where package `a` is not installed on disk (e.g. Linux CI
+    without Apple Silicon `mlx` wheels).
+    """
+    parts = fullname.split(".")
+    current = ""
+    for i, part in enumerate(parts):
+        current = f"{current}.{part}" if current else part
+        if current not in sys.modules:
+            mod = module if i == len(parts) - 1 else types.ModuleType(current)
+            monkeypatch.setitem(sys.modules, current, mod)
+        elif i == len(parts) - 1:
+            monkeypatch.setitem(sys.modules, current, module)
+        if i > 0:
+            parent_name = ".".join(parts[:i])
+            setattr(sys.modules[parent_name], part, sys.modules[current])
+
+
 def _install_fake_generation_modules(monkeypatch):
     seeds: list[int] = []
     sampler_args: list[tuple[float, int | None]] = []
@@ -67,7 +87,7 @@ def _install_fake_generation_modules(monkeypatch):
         "moshi_mlx.modules.conditioner": conditioner_module,
         "moshi_mlx.utils.sampling": sampling_module,
     }.items():
-        monkeypatch.setitem(sys.modules, name, module)
+        _mock_module(monkeypatch, name, module)
     return seeds, sampler_args, lm_gen_kwargs
 
 
@@ -201,7 +221,7 @@ def test_stream_text_injects_speaker_marker_only_for_first_chunk(monkeypatch):
         return [SimpleNamespace(tokens=tokens, text=script[0])]
 
     tts_module.script_to_entries = script_to_entries
-    monkeypatch.setitem(sys.modules, "moshi_mlx.models.tts", tts_module)
+    _mock_module(monkeypatch, "moshi_mlx.models.tts", tts_module)
 
     tts_model = SimpleNamespace(
         tokenizer=object(),
@@ -232,7 +252,7 @@ def test_step_does_not_decode_frames_containing_zero_tokens(monkeypatch):
     mlx_core.int64 = np.int64
     mlx_core.ones = np.ones
     mlx_core.clip = np.clip
-    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    _mock_module(monkeypatch, "mlx.core", mlx_core)
 
     decode_calls = []
     tts_model = SimpleNamespace(
@@ -273,7 +293,7 @@ def test_step_raises_generation_length_limit_error_at_max_gen_length(monkeypatch
     mlx_core.int64 = np.int64
     mlx_core.ones = np.ones
     mlx_core.clip = np.clip
-    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    _mock_module(monkeypatch, "mlx.core", mlx_core)
 
     session = object.__new__(tts_engine.TtsSession)
     session.max_gen_length = 100
@@ -294,7 +314,7 @@ def _install_fake_apply_voice_modules(monkeypatch):
     mlx_core.zeros = np.zeros
     mlx_core.float32 = np.float32
     mlx_core.uint8 = np.uint8
-    monkeypatch.setitem(sys.modules, "mlx.core", mlx_core)
+    _mock_module(monkeypatch, "mlx.core", mlx_core)
 
     class FakeConditionTensor:
         def __init__(self, tensor):
@@ -317,7 +337,7 @@ def _install_fake_apply_voice_modules(monkeypatch):
     conditioner_module.ConditionTensor = FakeConditionTensor
     conditioner_module.ConditionAttributes = FakeConditionAttributes
     conditioner_module.TensorCondition = FakeTensorCondition
-    monkeypatch.setitem(sys.modules, "moshi_mlx.modules.conditioner", conditioner_module)
+    _mock_module(monkeypatch, "moshi_mlx.modules.conditioner", conditioner_module)
 
 
 def _fake_apply_voice_session(*, multi_speaker=True, max_speakers=2, cfg_alpha=None):
