@@ -1,0 +1,23 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: Features
+      labels:
+        - enhancement
+    - title: Fixes
+      labels:
+        - bug
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Dependencies
+      labels:
+        - dependencies
+    - title: GitHub Actions
+      labels:
+        - github_actions
+    - title: Other changes
+      labels:
+        - "*"

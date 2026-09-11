@@ -2,96 +2,59 @@
 
 ## Purpose
 
-`unmute-mlx-bridge` provides persistent Apple Silicon MLX STT and TTS services
-that implement the Kyutai Unmute model-server WebSocket contract. It is a
-community Python package (Apache-2.0), currently in private incubation. It does
-not fork Unmute, own conversation state, or embed consumer-specific logic.
+Public, Apache-2.0 Apple Silicon MLX servers implementing Kyutai Unmute's STT
+and TTS WebSocket contracts. The bridge does not fork Unmute, own conversation
+state, or embed consumer-specific logic.
 
 ## Entry Points
 
-- Application: `unmute-mlx-stt` (port 8090) and `unmute-mlx-tts` (port 8089) —
-  implemented, real MLX inference.
-- API: `/api/asr-streaming` (STT WebSocket), `/api/tts_streaming` (TTS
-  WebSocket), `/healthz`, `/readyz`, `/metrics` on each process — implemented.
-- Worker: none.
-- CLI: `unmute-mlx-bridge` entry point prints usage; use `unmute-mlx-stt` /
-  `unmute-mlx-tts` to run a server.
-- Tests: `tests/` — portable protocol + full-session conformance suite (default
-  `pytest` run, no model weights); `tests/hardware/` — real-MLX suite behind
-  `pytest.mark.hardware`.
+- `unmute-mlx-stt` — STT server on port 8090
+- `unmute-mlx-tts` — TTS server on port 8089
+- `/api/asr-streaming` and `/api/tts_streaming` — protocol endpoints
+- `/healthz`, `/readyz`, `/metrics` — operational endpoints on both processes
+- `tests/` — portable protocol and lifecycle conformance
+- `tests/hardware/` — opt-in real-model Apple Silicon proof
 
-## Important Directories
+## Important Paths
 
 ```text
-.
-├── AGENTS.md                     repo authority and guardrails
-├── PROTOCOL.md                   wire-format compatibility writeup
-├── package-surface.json          machine-readable release contract
-├── pyproject.toml                Python package definition (hatchling, uv)
-├── src/
-│   └── unmute_mlx_bridge/
-│       ├── protocol/              msgpack message models + framing (stt.py, tts.py, wire.py)
-│       ├── stt/                   engine.py (MLX inference), server.py (WS server)
-│       ├── tts/                   engine.py (MLX inference), server.py (WS server)
-│       ├── observability.py       /healthz, /readyz, /metrics, auth
-│       └── config.py              environment-driven server configuration
-├── tests/
-│   ├── test_protocol_{stt,tts}.py         wire-shape tests
-│   ├── test_{stt,tts}_server_conformance.py  full session state machine, fake engine
-│   ├── test_smoke.py                      portable smoke test
-│   └── hardware/                          real MLX inference, opt-in
-├── docs/
-│   ├── repo-intake.md            lifecycle decisions
-│   ├── design/architecture.md    full design spec and non-goals
-│   ├── architecture/decisions/   ADRs
-│   ├── runbooks/                 operational procedures (deploy.md, etc.)
-│   └── superpowers/               private ops notes (plans/specs, do not modify)
-├── .forgejo/
-│   └── workflows/ci.yml          active private-incubation portable CI
-├── .github/
-│   └── workflows/ci.yml          dormant publication-cutover CI
-└── flake.nix                     Nix dev shell (python312 + uv)
+AGENTS.md                              repository authority and guardrails
+PROTOCOL.md                            wire-compatibility oracle
+package-surface.json                   machine-readable release posture
+pyproject.toml / uv.lock               Python package and locked dependencies
+src/unmute_mlx_bridge/protocol/        message models and framing
+src/unmute_mlx_bridge/{stt,tts}/       MLX engines and WebSocket servers
+src/unmute_mlx_bridge/observability.py health, readiness, metrics, auth
+src/unmute_mlx_bridge/config.py        environment-driven configuration
+tests/                                 portable conformance suite
+tests/hardware/                        real weights and MLX, explicit opt-in
+docs/design/architecture.md            design, boundaries, and proof criteria
+docs/architecture/decisions/           ADRs
+docs/runbooks/                         operating procedures
+.github/workflows/ci.yml               public CI and manual hardware proof
+.github/agents/                         GitHub Copilot custom agents
 ```
 
-## Build And Test Commands
+## Validation
 
 ```bash
-# Setup (uv.lock is committed)
 uv sync --locked
-
-# Portable tests (runs on Linux CI and local)
+git diff --check
 uv run --locked pytest -q
 
-# Hardware tests — Apple Silicon only, opt-in, never on portable CI
-# uv run --locked pytest -m hardware -q
-
-# Whitespace check (matches CI)
-git diff --check
+# Explicit Apple Silicon proof only:
+# uv run --locked pytest -m hardware -q -s
 ```
-
-## Deploy And Runtime
-
-- CI: Forgejo Actions (`.forgejo/workflows/ci.yml`), repo-owned K3s label
-  `unmute-mlx-bridge`
-- Artifact: none until publication approved
-- Runtime: local Apple Silicon for canary runs
-- Logs: none (canary artifacts are stored outside CI)
-- Health check: `/healthz` and `/readyz` per service process (planned)
-
-## Sensitive Data Boundaries
-
-Do not commit secrets, raw evidence, customer data, private exports, generated
-evidence bundles, `.env` files, cookie values, private hostnames, infrastructure
-topology, or model weights.
-
-Hardware test results and benchmark reports are artifacts only. They are stored
-in the private repository and require sanitization before any publication.
 
 ## Known Footguns
 
-- Model weights are not in the repo and must not be downloaded during portable
-  CI. The `pytest -m hardware` gate enforces this.
-- The pinned upstream Unmute compatibility baseline (commit SHAs in the design
-  spec) must be updated together with contract test fixtures when upstream changes.
-- Binding STT/TTS ports to a non-loopback interface requires explicit static
-  token configuration. Loopback-only is the safe default.
+- Portable CI must not import MLX or download model weights.
+- The upstream compatibility SHA, protocol fixtures, tests, and documentation
+  change together.
+- Each server admits one session at a time, matching the pinned upstream
+  behavior.
+- Non-loopback binding requires a configured authentication token.
+- Health and portable conformance do not prove real-model or downstream
+  end-to-end behavior.
+- Public comments, fixtures, CI logs, issues, and discussions share the same
+  privacy boundary as committed source.

@@ -1,31 +1,27 @@
 # Release Checklist
 
-- [ ] PR merged to the release branch.
-- [ ] CI passed for the exact merge SHA on GitHub Actions.
-- [ ] `package-surface.json` was reviewed for:
-  - `registry_target` — still `none` until publication approval
-  - `publication_status` — `private_incubation` until explicit approval
-  - `semver_policy` — `semver-v2`
-  - `ci_lane` — `github-actions`
-  - `runner_label` — `github-hosted:ubuntu-latest`
-  - `nix_flake` — `flake-check-required-before-publish`
-- [ ] `CHANGELOG.md` has a dated entry for the release version.
-- [ ] Breaking changes are labeled as MAJOR (or MINOR for `0.y.z`).
-- [ ] Migration notes exist for incompatible changes.
-- [ ] ADR exists for major compatibility or conformance decisions.
-- [ ] Artifact built for the exact merge SHA (if applicable).
-- [ ] For any publication: complete the publication gate in `AGENTS.md` and
-      obtain explicit approval from Nate.
-- [ ] Final status separates merged, deployed, and live-verified states.
+## Source Release
 
-## Pre-publication gate (additional, before visibility change)
+- [ ] Release version follows SemVer v2 and is reflected in project metadata.
+- [ ] `CHANGELOG.md` has a dated section with breaking changes called out.
+- [ ] The proposed tag resolves to the exact reviewed and tested commit.
+- [ ] Portable CI is green for that commit.
+- [ ] Hardware or end-to-end claims name their separate evidence and do not
+      borrow authority from portable CI.
+- [ ] README installation, compatibility, attribution, and license guidance is
+      current.
+- [ ] `package-surface.json` still truthfully describes registry and artifact
+      publication.
+- [ ] Generated release notes have been reviewed rather than accepted blindly.
+- [ ] Nate has explicitly approved this GitHub Release.
+- [ ] Final reporting separates merged, released, deployed, and live-verified.
 
-- [ ] Green protocol and portable CI on the exact proposed public commit.
-- [ ] Clean secret scan across entire Git history.
-- [ ] No private hostnames, credentials, topology, issue references, internal
-      logs, or identifiable voice recordings anywhere in history.
-- [ ] Apache-2.0 notices, Kyutai attribution, model-license guidance, and
-      unofficial-community-project disclaimer complete.
-- [ ] Reproducible install and canary instructions require no private infra.
-- [ ] README, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md reviewed.
-- [ ] Final visibility diff reviewed and explicit approval from Nate obtained.
+## Additional Gates
+
+- Publishing to PyPI, a container registry, or another package channel requires
+  an explicit target, credentials plan, provenance, rollback plan, and separate
+  approval.
+- A downstream production integration or cutover requires an evidence-backed
+  ADR and explicit cutover approval. A source release does not authorize it.
+- Rewriting published history or deleting public branches is destructive and
+  requires a separate remediation plan and explicit approval.

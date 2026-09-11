@@ -2,22 +2,20 @@
 
 ## Status
 
-**Proposed.** This ADR records the decisions this repository's public-release
-work (RAV-1613) was implemented against. It does not itself authorize the
-visibility flip, the history rewrite, or any cutover action — those require
-Nate's explicit approval per `AGENTS.md`'s Publication Gate and
-`.agents/checklists/release.md`'s pre-publication gate, separately from
-accepting this ADR's text.
+**Accepted, with implementation variance recorded 2026-09-10.** Nate approved
+the public repository and GitHub-primary authority direction, and the
+repository is now public. The visibility change was made in place with its
+existing Git history rather than through the fresh-history export specified
+below. That history decision remains part of the record; changing published
+history now would be a separate destructive action requiring explicit approval.
 
 ## Context
 
-`unmute-mlx-bridge` has been developed as a private Forgejo-canonical
-repository (`nate/unmute-mlx-bridge`) with a private GitHub passive mirror
-(`nwalker85/unmute-mlx-bridge`). Nate has decided to take this repository
-public. That decision has several sub-decisions that need to be on the
-record before any cutover, because they affect what the codebase, docs, and
-CI should look like *right now* (so the eventual flip is a visibility change
-and a history export, not a scramble to retrofit governance) as well as after.
+`unmute-mlx-bridge` was developed as a private Forgejo-canonical repository
+(`nate/unmute-mlx-bridge`) with a private GitHub passive mirror
+(`nwalker85/unmute-mlx-bridge`). This ADR recorded the decisions required to
+make the source public without weakening attribution, protocol conformance,
+privacy, or release governance.
 
 ## Decisions
 
@@ -27,41 +25,38 @@ At cutover, the sanitized tree is exported as a new (single- or few-commit)
 history into the existing GitHub repository (`nwalker85/unmute-mlx-bridge`),
 replacing whatever private-mirror history that repository currently holds.
 The full private Forgejo development history — agent working notes, canary
-iteration, and the private-ops files tracked in
-`.agents/checklists/publication-export.md` — stays on Forgejo only and is
-never pushed to the public remote. This is **not** `git push --force` of the
-existing `main` history to GitHub; it is a new history generated from the
-sanitized tree. See `docs/repo-intake.md` → "Publication Export Plan" and
-`.agents/checklists/publication-export.md` for the exclusion list and
-pre-flip sweep procedure this decision depends on.
+iteration, and the then-current private publication checklist — stays on
+Forgejo only and is never pushed to the public remote. This is **not**
+`git push --force` of the existing `main` history to GitHub; it is a new
+history generated from the sanitized tree. The original checklist and export
+procedure remain recoverable from repository history as evidence of the
+decision that was made at the time.
+
+**Implementation variance:** the GitHub repository was made public in place
+with its existing history, and old development branches also remained public.
+The current public tree has been cleaned of private-incubation working plans,
+but deletion does not erase them from Git history. This ADR does not authorize
+a force-push, history rewrite, or public-branch deletion; each would require a
+separate plan and explicit approval.
 
 ### 2. Authority flips: GitHub becomes canonical, Forgejo becomes mirror
 
-Today, Forgejo is canonical for development, PRs, CI, and review; GitHub is a
-private passive mirror with dormant Actions (see `.github/workflows/ci.yml`'s
-`on: workflow_dispatch` — automatic triggers are intentionally not enabled).
-At the flip:
+The authority boundary after publication is:
 
-- GitHub (`nwalker85/unmute-mlx-bridge`) becomes canonical — the place issues,
-  PRs, and reviews happen, and where `.github/workflows/ci.yml`'s triggers are
-  widened past manual dispatch.
-- Forgejo becomes a pull/DR mirror, receiving history from GitHub rather than
+- GitHub (`nwalker85/unmute-mlx-bridge`) is canonical — the place issues, PRs,
+  and reviews happen, with automatic portable GitHub Actions checks.
+- Forgejo is a pull/DR mirror, receiving history from GitHub rather than
   the other way around.
-- `.forgejo/workflows/ci.yml` (the repo-owned K3s-runner portable CI) is
-  retired or repurposed for internal-only validation; it is not the public
-  project's CI surface after the flip.
+- `.forgejo/workflows/ci.yml` is not the public project's CI surface.
 
-This is the reverse of the boundary this repo has operated under so far, and
-`AGENTS.md` is rewritten (this same change) to describe both the current
-phase and this flip explicitly, instead of stating only the current
-direction as an absolute.
+`AGENTS.md`, `package-surface.json`, and the lifecycle documentation now state
+this current boundary directly.
 
 ### 3. Agent surfaces ship publicly
 
-`AGENTS.md`, `.agents/` (including
-`.agents/checklists/publication-export.md`, itself kept at private-ops detail
-level rather than excluded outright), and `package-surface.json` are included
-in the public export, not stripped out as internal-only scaffolding.
+`AGENTS.md`, the reusable portions of `.agents/`, and
+`package-surface.json` are included in the public repository rather than
+stripped out as internal-only scaffolding.
 Rationale: this project is meant to demonstrate an agent-native repository —
 one where the operational contract for coding agents (entry points, test
 commands, guardrails, release checklist) is itself part of the public
@@ -115,15 +110,15 @@ takes precedence for a given session.
 
 ## Consequences
 
-- Everything above is implemented in this repository's public-release work
-  now, while the repo is still private, so that the flip itself is a
-  visibility change plus a history export — not a scramble to retrofit
-  governance, licensing correctness, or CI after the fact.
-- `AGENTS.md` describes two states (current phase, and the flip) rather than
-  a single absolute, which is unusual for that file's normal style; this is
-  deliberate and should be preserved until the flip actually happens, at
-  which point the "current phase" language is updated to match reality and
-  the "at flip" language is retired.
-- Nothing in this ADR authorizes the flip itself. The publication gate in
-  `AGENTS.md` and the pre-publication checklist in
-  `.agents/checklists/release.md` remain the actual approval path.
+- GitHub is the public source of truth for issues, pull requests, CI, and
+  releases; Forgejo is a disaster-recovery mirror.
+- Repository-wide agent instructions and purpose-built GitHub custom agents
+  are public, reviewable project interfaces.
+- Portable CI is automatic. Real-model Apple Silicon proof is manual and
+  trusted-only because it executes contributed code while using large cached
+  model artifacts.
+- Publication of source does not imply a PyPI release, production deployment,
+  or downstream cutover. Those remain separately approved events.
+- The published-history variance is visible and unresolved. Normal cleanup may
+  improve the current tree, but destructive history remediation is outside
+  this ADR's authority.

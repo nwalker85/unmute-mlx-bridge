@@ -30,12 +30,11 @@ an individual is representing the project or its community.
 
 ## Enforcement
 
-During private incubation, instances of unacceptable behavior may be reported
-to the repository owner through an established private channel. All complaints
-will be reviewed and investigated promptly and fairly.
-
-Before publication, a documented private reporting channel and full enforcement
-process must be enabled.
+Instances of unacceptable behavior may be reported privately to the repository
+owner using the contact options on the
+[maintainer's GitHub profile](https://github.com/nwalker85). All complaints
+will be reviewed and investigated promptly, fairly, and with respect for the
+privacy and safety of the reporter and affected community members.
 
 ## Attribution
 

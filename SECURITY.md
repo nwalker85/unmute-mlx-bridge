@@ -1,42 +1,37 @@
-# Security
+# Security Policy
 
-## Reporting Vulnerabilities
+## Reporting A Vulnerability
 
-**Please report security issues privately, not as a public issue.**
+Please do not open a public issue for a suspected vulnerability.
 
-Use GitHub's private vulnerability reporting: go to the **Security** tab →
-**Report a vulnerability**. That opens a private advisory visible only to
-maintainers.
+Use GitHub's private vulnerability reporting: open the repository's
+**Security** tab and choose **Report a vulnerability**. The report creates a
+private advisory visible only to repository maintainers.
 
-Please include: what you found, how to reproduce it, the version or commit, and
-what an attacker could do with it. You'll get an acknowledgement; this is a
-small project maintained in spare time, so please allow reasonable time for a
-fix before public disclosure.
-
-> **Maintainer note — must be done before or at publication:** private
-> vulnerability reporting is **opt-in** and is not enabled by default. Enable it
-> at **Settings → Advanced Security → Private vulnerability reporting**. Until
-> that toggle is on, the Security tab offers reporters no private channel and
-> the instructions above do not work.
-
-## Sensitive Data
-
-Do not commit:
-
-- Secrets, tokens, API keys, or credentials of any kind.
-- `.env` files or any file containing environment secrets.
-- Raw forensic evidence or recordings.
-- Cookie values or session tokens.
-- Customer data or private exports.
-- Generated evidence bundles.
-- Private hostnames, internal network topology, or infrastructure identifiers.
-- Model weights or any artifact derived from private model runs.
+Include the affected version or commit, reproduction steps, expected impact,
+and any suggested mitigation. This is a small community project maintained in
+spare time; reports will be acknowledged as promptly as possible, and reporters
+are asked to allow reasonable remediation time before disclosure.
 
 ## Supported Versions
 
-This project is in private incubation at `0.y.z` under SemVer v2. Security
-fixes will be applied to the current development head. Supported version policy
-will be documented at first public release.
+| Version | Supported |
+|---|---|
+| Current `main` | Yes |
+| Latest `0.1.x` release | Yes |
+| Older snapshots | Best effort |
+
+The project is pre-1.0. Security fixes target current `main` and the latest
+published `0.1.x` release when one exists.
+
+## Sensitive Data
+
+Do not commit or publish:
+
+- secrets, tokens, API keys, credentials, or `.env` files;
+- raw recordings, customer data, private exports, or generated evidence;
+- cookies, session tokens, private hostnames, or infrastructure topology;
+- model weights or artifacts derived from private model runs.
 
 ## Authentication Notes
 
@@ -45,8 +40,8 @@ Binding to a non-loopback interface requires a configured constant-time token
 check. Tokens come from environment variables and must never be logged, traced,
 or committed.
 
-## Model Weight License
+## Model And Voice Licenses
 
-This project does not redistribute Kyutai model weights. Model weights retain
-their original CC-BY-4.0 license. Refer to the upstream Kyutai repositories
-for model licensing terms.
+This repository does not redistribute Kyutai model weights or voices. They
+retain their upstream licenses. See [NOTICE](NOTICE) and the README's voice
+licensing section before redistributing generated or source material.

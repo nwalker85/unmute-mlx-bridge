@@ -115,9 +115,9 @@ Two traps worth stating plainly:
 - The asset lives outside the repo. It is a **dead link on PyPI, in a clone, in
   a tarball, and on any non-GitHub renderer.** Anything load-bearing should not
   be video-only.
-- Attachment visibility follows the repository's. While this repo is private
-  the video is not publicly viewable — **re-verify the embed after the repo
-  goes public.**
+- Attachment visibility follows the repository's. This repository is public,
+  so a committed attachment URL is publicly viewable; verify the rendered
+  README from a logged-out browser before treating the embed as proof.
 - Caption it with the hardware, the delivery mode, and whether the pause you
   can hear is representative.
 

@@ -1,24 +1,25 @@
 ---
 name: ci
 
-# DORMANT: GitHub is a private passive mirror while Forgejo is canonical.
-# Re-enable automatic triggers only after explicit publication approval.
-
 on:  # yamllint disable-line rule:truthy
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_hardware:
+        description: Run real-model tests on an Apple Silicon runner
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
   python:
-    # GitHub-hosted runner. If a self-hosted runner is registered for this repo
-    # after cutover, replace this label and update runner_label in
-    # package-surface.json.
+    name: Portable tests
     runs-on: ubuntu-latest
     # Bounds a hung test (e.g. a receive loop with no client-side timeout
     # waiting on a fix that was reverted) to a finite CI run instead of a
@@ -47,12 +48,13 @@ jobs:
         # Run them explicitly on the reference host only.
 
   hardware:
+    name: Apple Silicon hardware proof
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_hardware }}
     # Real MLX inference, real Kyutai weights, real Apple Silicon (RAV-1613).
     # macos-14 is an Apple Silicon (M1) GitHub-hosted runner -- see
     # https://github.com/actions/runner-images/blob/main/images/macos/macos-14-Readme.md.
-    # This job stays dormant with the rest of this workflow (see the on:
-    # trigger above) until publication cutover; it is NOT added to
-    # .forgejo/workflows/ci.yml, which has no macOS runner capacity.
+    # This job is intentionally manual: it downloads real model weights and
+    # must never be triggered by untrusted pull-request code.
     runs-on: macos-14
     timeout-minutes: 45
     continue-on-error: false

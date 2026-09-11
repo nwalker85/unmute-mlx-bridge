@@ -5,15 +5,15 @@
   "package_manager": "uv",
   "package_name": "unmute-mlx-bridge",
   "registry_target": "none",
-  "publish_command": "none — deferred until explicit publication approval",
-  "release_trigger": "manually approved release only",
+  "publish_command": "none — source distribution; no package registry target",
+  "release_trigger": "explicitly approved GitHub Release only",
   "ci_gate": "uv sync --locked && uv run --locked pytest -q",
-  "ci_lane": "forgejo-actions",
-  "runner_label": "unmute-mlx-bridge",
+  "ci_lane": "github-actions",
+  "runner_label": "github-hosted:ubuntu-latest",
   "nix_shell": "devShells.default",
   "nix_flake": "flake-check-required-before-publish",
   "semver_policy": "semver-v2",
   "owner": "Nate Walker",
-  "publication_status": "private_incubation",
-  "_note": "Forgejo nate/unmute-mlx-bridge is canonical for private-incubation development, PRs, CI, and review. GitHub nwalker85/unmute-mlx-bridge is a private passive mirror with dormant Actions. Portable CI targets the repo-owned Forgejo K3s label unmute-mlx-bridge; locked local validation remains the active gate until that lane runs the exact commit. Registry and artifact publication remain deferred until explicit approval."
+  "publication_status": "public_source",
+  "_note": "GitHub nwalker85/unmute-mlx-bridge is the public canonical repository for development, pull requests, CI, and review. Forgejo nate/unmute-mlx-bridge is a pull/DR mirror. Portable CI runs in GitHub Actions; real-model Apple Silicon tests are manual and opt-in. No registry artifact is published."
 }
