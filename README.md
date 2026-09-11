@@ -472,7 +472,7 @@ shipping a product built on a specific voice — it is the authority here, not
 this table.
 
 **This bridge's built-in default (`TTS_DEFAULT_VOICE`) is
-`unmute-prod-website/p329_022.wav`** — Nate's blind-audition pick. Despite
+`unmute-prod-website/p329_022.wav`** — my blind-audition pick. Despite
 living under `unmute-prod-website/`, this specific file is VCTK speaker p329,
 so it is licensed **CC BY 4.0, not CC0**: commercially safe, attribution
 required. **Attribution: uses a voice from the VCTK corpus (CSTR, University
@@ -488,6 +488,10 @@ pass `?voice=`/`?voices=` explicitly to use one, and do not use them in
 anything commercial. **No voice served through this bridge is blanket CC BY
 4.0** — that would be wrong for the NC-licensed directories above; the
 per-directory table is the accurate picture.
+
+## About
+
+I built this to run full-duplex speech-to-speech on consumer hardware — no GPU box, no expensive cloud inference, just a Mac and open-source models. If you're interested in this kind of work, visit [nwalker.cc](https://nwalker.cc) to see other projects and get in touch — I'm available for consulting on speech systems, agents, and real-time inference.
 
 ## License
 
