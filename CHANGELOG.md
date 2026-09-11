@@ -11,6 +11,8 @@ compatibility or version labels.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-10
+
 ### Repository
 
 - Reconciled the public GitHub-primary authority, CI, contribution, security,
