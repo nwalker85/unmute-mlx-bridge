@@ -22,7 +22,19 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from unmute_mlx_bridge.config import TtsConfig
-from unmute_mlx_bridge.observability import Metrics, ServiceHealth, build_process_request
+from unmute_mlx_bridge.observability import (
+    CorrelationContext,
+    Metrics,
+    ServiceHealth,
+    build_process_request,
+    extract_client_conversation_id,
+    extract_client_session_id,
+    extract_otel_context,
+    get_tracer,
+    init_otel,
+    log_clock_metadata,
+    setup_logging,
+)
 from unmute_mlx_bridge.protocol.tts import (
     SUPPORTED_FORMAT,
     TtsAudioMessage,
@@ -217,7 +229,49 @@ class TtsServer:
     async def _run_session(self, connection: ServerConnection, query: TtsStreamingQuery) -> None:
         assert self.bundle is not None
         voice = query.voice or self.config.default_voice
+
+        # Prefer the client-supplied session ID for cross-repo correlation.
+        client_sid = extract_client_session_id(connection.request.headers) if connection.request else None
+        client_cid = extract_client_conversation_id(connection.request.headers) if connection.request else None
+        ctx = CorrelationContext(
+            session_id=client_sid,
+            conversation_id=client_cid,
+        ) if client_sid else CorrelationContext(conversation_id=client_cid)
+
+        tracer = get_tracer()
+        # Extract W3C traceparent/tracestate explicitly from WebSocket upgrade headers.
+        # The OTEL SDK does not automatically propagate context through WebSocket handshakes.
+        otel_ctx = extract_otel_context(connection.request.headers) if connection.request else None
+        span = tracer.start_span("tts.session", context=otel_ctx)
+        span.set_attribute("session.id", ctx.session_id)
+        span.set_attribute("session.voice", voice)
+        if ctx.conversation_id is not None:
+            span.set_attribute("conversation.id", ctx.conversation_id)
+        try:
+            await self._run_session_inner(connection, query, ctx)
+        finally:
+            span.end()
+
+    async def _run_session_inner(
+        self,
+        connection: ServerConnection,
+        query: TtsStreamingQuery,
+        ctx: CorrelationContext,
+    ) -> None:
+        assert self.bundle is not None
+        voice = query.voice or self.config.default_voice
         await connection.send(pack_message(TtsReadyMessage()))
+        logger.info(
+            "tts: session started",
+            extra={
+                "event": "tts_session_start",
+                "session_id": ctx.session_id,
+                "conversation_id": ctx.conversation_id,
+                "voice": voice,
+                "client_supplied": (connection.request is not None
+                                    and connection.request.headers.get("x-unmute-session-id") is not None),
+            },
+        )
         # A first-use voice may need to be fetched from Hugging Face. Stock
         # Unmute allows only 500 ms for connect + Ready, so acknowledge the
         # admitted channel before that implementation-specific initialization
@@ -328,6 +382,14 @@ class TtsServer:
                         text = message.text.strip()
                         if not text:
                             continue
+                        buffered_extra: dict[str, object] = {
+                            "event": "tts_text_buffered",
+                            "session_id": ctx.session_id,
+                            "buffered_chars": buffered_chars + len(text),
+                        }
+                        if self.config.log_transcripts:
+                            buffered_extra["text"] = text
+                        logger.info("tts: text buffered", extra=buffered_extra)
                         next_chars = (
                             buffered_chars + len(text) + (1 if buffered_chunks else 0)
                         )
@@ -352,6 +414,13 @@ class TtsServer:
                         buffered_chars = next_chars
                         continue
                     cancelled = threading.Event()
+                    streaming_extra: dict[str, object] = {
+                        "event": "tts_text_streaming",
+                        "session_id": ctx.session_id,
+                    }
+                    if self.config.log_transcripts:
+                        streaming_extra["text"] = message.text
+                    logger.info("tts: text streaming", extra=streaming_extra)
                     first_output_sent = await self._emit_stream(
                         connection,
                         session.stream_text(message.text, cancelled.is_set),
@@ -624,10 +693,9 @@ def run() -> None:
     if args.port:
         config = TtsConfig(**{**config.__dict__, "port": args.port})
 
-    logging.basicConfig(
-        level=config.log_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    setup_logging(config.log_level, config.log_format)
+    init_otel("unmute-mlx-tts")
+    log_clock_metadata()
     asyncio.run(_serve(config))
 
 

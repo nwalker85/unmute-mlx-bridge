@@ -20,7 +20,19 @@ from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from unmute_mlx_bridge.config import SttConfig
-from unmute_mlx_bridge.observability import Metrics, ServiceHealth, build_process_request
+from unmute_mlx_bridge.observability import (
+    CorrelationContext,
+    Metrics,
+    ServiceHealth,
+    build_process_request,
+    extract_client_conversation_id,
+    extract_client_session_id,
+    extract_otel_context,
+    get_tracer,
+    init_otel,
+    log_clock_metadata,
+    setup_logging,
+)
 from unmute_mlx_bridge.protocol.stt import (
     SttClientMessageAdapter,
     SttErrorMessage,
@@ -36,7 +48,7 @@ from unmute_mlx_bridge.protocol.stt import (
     SttWordMessage as SttWordOut,
 )
 from unmute_mlx_bridge.protocol.wire import pack_message, unpack_message
-from unmute_mlx_bridge.stt.engine import SttModelBundle, SttSession, SttStepEvent
+from unmute_mlx_bridge.stt.engine import FRAME_SIZE, SttModelBundle, SttSession, SttStepEvent
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +102,7 @@ class SttServer:
             self.bundle = await asyncio.to_thread(self._bundle_loader)
             self.health.mark_loaded()
             self.metrics.model_load_seconds.set(time.monotonic() - start)
+            self.metrics.stt_recv_queue_bound.set(self.config.max_recv_queue)
             logger.info("stt: model ready in %.1fs", time.monotonic() - start)
         except Exception:
             logger.exception("stt: model load failed")
@@ -124,41 +137,122 @@ class SttServer:
     async def _run_session(self, connection: ServerConnection) -> None:
         assert self.bundle is not None
         session = self._session_cls(bundle=self.bundle, max_steps=self.config.max_steps)
+
+        # Prefer the client-supplied session ID for cross-repo correlation.
+        client_sid = extract_client_session_id(connection.request.headers) if connection.request else None
+        client_cid = extract_client_conversation_id(connection.request.headers) if connection.request else None
+        ctx = CorrelationContext(
+            session_id=client_sid,
+            conversation_id=client_cid,
+        ) if client_sid else CorrelationContext(conversation_id=client_cid)
+
+        tracer = get_tracer()
+        # Extract W3C traceparent/tracestate explicitly from WebSocket upgrade headers.
+        # The OTEL SDK does not automatically propagate context through WebSocket handshakes.
+        otel_ctx = extract_otel_context(connection.request.headers) if connection.request else None
         await connection.send(pack_message(SttReadyMessage()))
+        logger.info(
+            "stt: session started",
+            extra={
+                "event": "stt_session_start",
+                "session_id": ctx.session_id,
+                "conversation_id": ctx.conversation_id,
+                "client_supplied": client_sid is not None,
+            },
+        )
 
         first_audio_at: float | None = None
         first_output_sent = False
+        pending_audio_frames = 0
 
-        async for raw in connection:
-            if not isinstance(raw, (bytes, bytearray)):
-                continue  # Text frames are not part of this protocol; ignore.
-            try:
-                data = unpack_message(raw)
-                message = SttClientMessageAdapter.validate_python(data)
-            except Exception as exc:
-                self.metrics.protocol_errors.inc()
-                await connection.send(
-                    pack_message(SttErrorMessage(message=f"malformed frame: {exc}"))
-                )
-                continue
-
-            if message.type == "Marker":
-                marker: SttMarkerMessage = message  # type: ignore[assignment]
-                session.push_marker(marker.id)
-                events: list[SttStepEvent] = []
-            else:  # Audio
-                if first_audio_at is None:
-                    first_audio_at = time.monotonic()
-                self.metrics.input_audio_seconds.inc(len(message.pcm) / 24_000)
-                events = await asyncio.to_thread(session.push_audio, message.pcm)
-
-            for event in events:
-                if not first_output_sent and event.kind in ("word", "step") and first_audio_at:
-                    first_output_sent = True
-                    self.metrics.time_to_first_output_seconds.observe(
-                        time.monotonic() - first_audio_at
+        with tracer.start_as_current_span(
+            "stt.session",
+            context=otel_ctx,
+            attributes={
+                "session.id": ctx.session_id,
+                **({} if ctx.conversation_id is None else {"conversation.id": ctx.conversation_id}),
+            },
+        ):
+            async for raw in connection:
+                if not isinstance(raw, (bytes, bytearray)):
+                    continue  # Text frames are not part of this protocol; ignore.
+                try:
+                    data = unpack_message(raw)
+                    message = SttClientMessageAdapter.validate_python(data)
+                except Exception as exc:
+                    self.metrics.protocol_errors.inc()
+                    await connection.send(
+                        pack_message(SttErrorMessage(message=f"malformed frame: {exc}"))
                     )
-                await connection.send(pack_message(_event_to_message(event)))
+                    continue
+
+                if message.type == "Marker":
+                    marker: SttMarkerMessage = message  # type: ignore[assignment]
+                    session.push_marker(marker.id)
+                    events: list[SttStepEvent] = []
+                else:  # Audio
+                    n_samples = len(message.pcm)
+                    if n_samples > self.config.max_input_frame_samples:
+                        self.metrics.stt_oversized_frames_total.inc()
+                        logger.warning(
+                            "stt: oversized audio frame rejected",
+                            extra={
+                                "event": "stt_oversized_frame",
+                                "session_id": ctx.session_id,
+                                "n_samples": n_samples,
+                                "limit": self.config.max_input_frame_samples,
+                            },
+                        )
+                        await connection.send(
+                            pack_message(SttErrorMessage(
+                                message=(
+                                    f"audio frame too large: {n_samples} samples "
+                                    f"(limit {self.config.max_input_frame_samples})"
+                                )
+                            ))
+                        )
+                        continue
+
+                    if first_audio_at is None:
+                        first_audio_at = time.monotonic()
+                    audio_seconds = n_samples / 24_000
+                    self.metrics.input_audio_seconds.inc(audio_seconds)
+
+                    pending_audio_frames += max(1, n_samples // FRAME_SIZE)
+                    self.metrics.stt_inference_frames_active.set(pending_audio_frames)
+
+                    step_start = time.monotonic()
+                    events = await asyncio.to_thread(session.push_audio, message.pcm)
+                    step_elapsed = time.monotonic() - step_start
+
+                    n_frames = max(1, n_samples // FRAME_SIZE)
+                    pending_audio_frames = max(0, pending_audio_frames - n_frames)
+                    self.metrics.stt_inference_frames_active.set(pending_audio_frames)
+
+                    # Fix the dead inference_step_seconds metric: observe per-frame estimate.
+                    per_frame_s = step_elapsed / n_frames
+                    for _ in range(n_frames):
+                        self.metrics.inference_step_seconds.observe(per_frame_s)
+                    self.metrics.inference_step_batch_frames.observe(n_frames)
+                    if audio_seconds > 0:
+                        self.metrics.inference_step_rtf.observe(step_elapsed / audio_seconds)
+
+                for event in events:
+                    if not first_output_sent and event.kind in ("word", "step") and first_audio_at:
+                        first_output_sent = True
+                        self.metrics.time_to_first_output_seconds.observe(
+                            time.monotonic() - first_audio_at
+                        )
+                    if event.kind == "word":
+                        word_extra: dict[str, object] = {
+                            "event": "stt_word",
+                            "session_id": ctx.session_id,
+                            "start_time": event.start_time,
+                        }
+                        if self.config.log_transcripts:
+                            word_extra["text"] = event.text
+                        logger.info("stt: word recognized", extra=word_extra)
+                    await connection.send(pack_message(_event_to_message(event)))
 
 
 async def _serve(config: SttConfig) -> None:
@@ -174,6 +268,7 @@ async def _serve(config: SttConfig) -> None:
         config.host,
         config.port,
         process_request=process_request,
+        max_queue=config.max_recv_queue,
     ):
         logger.info("stt: listening on ws://%s:%d%s", config.host, config.port, PROTOCOL_PATH)
         try:
@@ -195,10 +290,9 @@ def run() -> None:
     if args.port:
         config = SttConfig(**{**config.__dict__, "port": args.port})
 
-    logging.basicConfig(
-        level=config.log_level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    setup_logging(config.log_level, config.log_format)
+    init_otel("unmute-mlx-stt")
+    log_clock_metadata()
     asyncio.run(_serve(config))
 
 
