@@ -1,0 +1,9 @@
+
+# 2026-07-29 01:40:13.734432
++TDD RED PHASE ONLY. Create one minimal regression test that exercises real pytest default collection and fails because tests/hardware are currently included by plain pytest collection on Apple Silicon. The test must not import MLX or run hardware tests; invoke pytest collection in a subprocess against the repository and assert hardware tests are absent from selected output. Do not modify pyproject.toml or any production/config file. Do not commit.
+
+# 2026-07-29 01:42:37.227093
++TDD GREEN PHASE. The regression test now fails because plain pytest collection includes tests marked hardware. Make the single smallest configuration change in pyproject.toml so default pytest runs exclude the hardware marker, while an explicit command-line '-m hardware' remains the documented opt-in. Do not edit tests or source code. Do not commit.
+
+# 2026-07-29 01:44:16.601488
++Refine only the regression test assertion. The config correctly deselects 4 hardware tests, but the current assertion for the substring 'hardware' falsely matches this test function's own name. Assert specifically that no collected node id starts with or contains the path 'tests/hardware/' (normalize backslashes if useful). Keep subprocess collection behavior. Also remove the trailing whitespace in the docstring blank line. Do not edit pyproject.toml or source. Do not commit.
